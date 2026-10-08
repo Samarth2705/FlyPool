@@ -16,6 +16,23 @@ export function errorHandler(err, req, res, next) {
 
   if (err instanceof AppError) {
     ({ statusCode, code, message, details } = err);
+  } else if (err.name === 'ValidationError') {
+    // Mongoose schema validation failed, e.g. a required field is missing
+    statusCode = 400;
+    code = 'VALIDATION_ERROR';
+    message = 'Some fields are invalid.';
+    details = Object.values(err.errors).map((e) => ({ field: e.path, message: e.message }));
+  } else if (err.name === 'CastError') {
+    // e.g. /api/trips/abc where "abc" is not a valid MongoDB id
+    statusCode = 400;
+    code = 'INVALID_ID';
+    message = `Invalid value for ${err.path}.`;
+  } else if (err.code === 11000) {
+    // Unique index violated, e.g. an email that is already registered
+    statusCode = 409;
+    code = 'DUPLICATE_VALUE';
+    const field = Object.keys(err.keyValue || {})[0];
+    message = field ? `That ${field} is already in use.` : 'That value is already in use.';
   } else if (err.type === 'entity.parse.failed') {
     // Invalid JSON in the request body
     statusCode = 400;

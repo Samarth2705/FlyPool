@@ -6,7 +6,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 
 import { env } from './config/env.js';
-import healthRoutes from './routes/health.routes.js';
+import apiRoutes from './routes/index.js';
 import { notFound } from './middleware/notFound.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -23,8 +23,8 @@ app.use(cors({ origin: env.clientOrigin, credentials: true }));
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 
-// Routes
-app.use('/api/health', healthRoutes);
+// All API routes live under /api (see routes/index.js)
+app.use('/api', apiRoutes);
 
 // 404 + error handling (must be last)
 app.use(notFound);

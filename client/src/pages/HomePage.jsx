@@ -1,7 +1,8 @@
-// Temporary landing page for phase 1: shows whether the API and database
-// are reachable. It will be replaced by the real pages in later phases.
+// Landing page. Also shows whether the API and database are reachable,
+// which helps while setting the project up.
 import { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
+import { Link } from 'react-router';
+import PageContainer from '../components/layout/PageContainer';
 import { getHealth } from '../api/health.api';
 
 function StatusRow({ label, ok, text }) {
@@ -22,31 +23,28 @@ export default function HomePage() {
   }, []);
 
   return (
-    <main className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
-      <motion.div
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4 }}
-        className="w-full max-w-md rounded-2xl bg-white p-8 shadow-sm"
-      >
-        <h1 className="text-3xl font-bold text-slate-900">FlyPool</h1>
-        <p className="mt-1 text-slate-500">Share a cab with passengers from your flight.</p>
+    <PageContainer title="FlyPool" subtitle="Share a cab with passengers from your flight.">
+      <div className="divide-y divide-slate-100 border-y border-slate-100">
+        {!health && !error && <p className="py-2 text-slate-400">Checking server…</p>}
+        {error && <StatusRow label="API" ok={false} text={error.message} />}
+        {health && (
+          <>
+            <StatusRow label="API" ok text="Online" />
+            <StatusRow
+              label="Database"
+              ok={health.database === 'connected'}
+              text={health.database === 'connected' ? 'Connected' : 'Disconnected'}
+            />
+          </>
+        )}
+      </div>
 
-        <div className="mt-6 divide-y divide-slate-100 border-t border-slate-100">
-          {!health && !error && <p className="py-2 text-slate-400">Checking server…</p>}
-          {error && <StatusRow label="API" ok={false} text={error.message} />}
-          {health && (
-            <>
-              <StatusRow label="API" ok text="Online" />
-              <StatusRow
-                label="Database"
-                ok={health.database === 'connected'}
-                text={health.database === 'connected' ? 'Connected' : 'Disconnected'}
-              />
-            </>
-          )}
-        </div>
-      </motion.div>
-    </main>
+      <Link
+        to="/trip/new"
+        className="mt-6 block rounded-lg bg-sky-600 px-4 py-2.5 text-center font-medium text-white hover:bg-sky-700"
+      >
+        Get started
+      </Link>
+    </PageContainer>
   );
 }
