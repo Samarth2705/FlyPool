@@ -1,6 +1,6 @@
 // Auth API calls. The server sets / clears the httpOnly cookie itself,
 // so the frontend never sees or stores the token.
-// (The server routes are built in phase 2.)
+// Server side: server/src/routes/auth.routes.js
 import api from './client';
 
 export async function getMe() {

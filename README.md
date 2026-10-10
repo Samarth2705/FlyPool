@@ -47,6 +47,19 @@ Every API response has the same shape:
 { "success": false, "error": { "code": "SOME_CODE", "message": "Readable message" } }
 ```
 
+### Auth API
+
+The login token is a JWT stored in an httpOnly cookie, so the browser sends it automatically and JavaScript can never read it.
+
+| Method | URL | Body | Notes |
+|---|---|---|---|
+| POST | `/api/auth/register` | `name`, `email`, `phone` (Indian mobile), `password` (8+ chars) | Creates the account and logs in |
+| POST | `/api/auth/login` | `email`, `password` | |
+| POST | `/api/auth/logout` | – | Clears the cookie |
+| GET | `/api/auth/me` | – | The logged-in user, or 401 |
+
+Register and login are limited to 20 attempts per IP every 15 minutes.
+
 ## Getting started
 
 **Requirements:** Node.js 20+ and a free [MongoDB Atlas](https://www.mongodb.com/atlas) cluster.
@@ -70,7 +83,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The home page shows whether the API and database are connected.
+Open http://localhost:5173 to see the login / register page. http://localhost:5173/status is a development page that shows whether the API and database are connected.
 
 During development, Vite forwards every `/api` request to the Express server (see `client/vite.config.js`), so the browser treats both as one site and the auth cookie works without CORS issues.
 
@@ -103,7 +116,7 @@ If the frontend and backend are later hosted on **different domains**, the auth 
 ## Roadmap
 
 - [x] Phase 1 — Project setup, health check, JWT/cookie foundation, page shells and routes
-- [ ] Phase 2 — Authentication (register, login, logout)
+- [x] Phase 2 — Authentication (register, login, logout)
 - [ ] Phase 3 — Models + demo seed data (Mumbai)
 - [ ] Phase 4 — Trip details, flight verification, drop location
 - [ ] Phase 5 — Geo utilities, fare calculation, matching (with unit tests)

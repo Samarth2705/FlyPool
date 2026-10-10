@@ -1,6 +1,15 @@
 import { AppError } from '../utils/AppError.js';
 import { env } from '../config/env.js';
 
+// True when a query failed because MongoDB could not be reached, e.g. a
+// query waited for a connection that never came ("buffering timed out").
+function isDatabaseUnavailable(err) {
+  return (
+    ['MongoServerSelectionError', 'MongooseServerSelectionError', 'MongoNetworkError'].includes(err.name) ||
+    (err.name === 'MongooseError' && /buffering timed out/.test(err.message))
+  );
+}
+
 // Central error handler. Every error in the app ends up here and is sent
 // back in the same shape:
 //   { success: false, error: { code, message, details? } }
@@ -33,6 +42,12 @@ export function errorHandler(err, req, res, next) {
     code = 'DUPLICATE_VALUE';
     const field = Object.keys(err.keyValue || {})[0];
     message = field ? `That ${field} is already in use.` : 'That value is already in use.';
+  } else if (isDatabaseUnavailable(err)) {
+    // MongoDB is down or unreachable right now
+    statusCode = 503;
+    code = 'DATABASE_UNAVAILABLE';
+    message = 'The database is temporarily unavailable. Please try again shortly.';
+    console.error('Database unavailable:', err.message);
   } else if (err.type === 'entity.parse.failed') {
     // Invalid JSON in the request body
     statusCode = 400;

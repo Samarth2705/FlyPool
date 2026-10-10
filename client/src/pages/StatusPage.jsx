@@ -1,9 +1,10 @@
-// Landing page. Also shows whether the API and database are reachable,
-// which helps while setting the project up.
+// Development page at /status (not linked from the app): shows whether the
+// API and database are reachable, and who is logged in.
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import PageContainer from '../components/layout/PageContainer';
 import { getHealth } from '../api/health.api';
+import { useAuth } from '../hooks/useAuth';
 
 function StatusRow({ label, ok, text }) {
   return (
@@ -14,7 +15,39 @@ function StatusRow({ label, ok, text }) {
   );
 }
 
-export default function HomePage() {
+// Shows who is logged in, with a log out button - or links to log in / register.
+function AccountStatus() {
+  const { user, loading, signOut } = useAuth();
+
+  if (loading) return null;
+
+  if (user) {
+    return (
+      <div className="mt-4 flex items-center justify-between text-sm">
+        <span className="text-slate-600">
+          Logged in as <span className="font-medium text-slate-900">{user.name}</span>
+        </span>
+        <button onClick={signOut} className="font-medium text-sky-600 hover:underline">
+          Log out
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <p className="mt-4 text-center text-sm text-slate-500">
+      <Link to="/login" className="font-medium text-sky-600 hover:underline">
+        Log in
+      </Link>
+      {' or '}
+      <Link to="/register" className="font-medium text-sky-600 hover:underline">
+        create an account
+      </Link>
+    </p>
+  );
+}
+
+export default function StatusPage() {
   const [health, setHealth] = useState(null);
   const [error, setError] = useState(null);
 
@@ -23,7 +56,7 @@ export default function HomePage() {
   }, []);
 
   return (
-    <PageContainer title="FlyPool" subtitle="Share a cab with passengers from your flight.">
+    <PageContainer title="System status" subtitle="Development check for the API, database and login.">
       <div className="divide-y divide-slate-100 border-y border-slate-100">
         {!health && !error && <p className="py-2 text-slate-400">Checking server…</p>}
         {error && <StatusRow label="API" ok={false} text={error.message} />}
@@ -39,12 +72,8 @@ export default function HomePage() {
         )}
       </div>
 
-      <Link
-        to="/trip/new"
-        className="mt-6 block rounded-lg bg-sky-600 px-4 py-2.5 text-center font-medium text-white hover:bg-sky-700"
-      >
-        Get started
-      </Link>
+
+      <AccountStatus />
     </PageContainer>
   );
 }

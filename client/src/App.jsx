@@ -4,8 +4,9 @@ import { BrowserRouter, Routes, Route } from 'react-router';
 import { AuthProvider } from './context/AuthProvider';
 import ProtectedRoute from './components/ProtectedRoute';
 
-import HomePage from './pages/HomePage';
+import AuthLayout from './components/auth/AuthLayout';
 import AuthPage from './pages/AuthPage';
+import StatusPage from './pages/StatusPage';
 import TripDetailsPage from './pages/TripDetailsPage';
 import VerifyFlightPage from './pages/VerifyFlightPage';
 import MatchesPage from './pages/MatchesPage';
@@ -17,10 +18,16 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <Routes>
-          {/* Public pages */}
-          <Route path="/" element={<HomePage />} />
-          <Route path="/login" element={<AuthPage mode="login" />} />
-          <Route path="/register" element={<AuthPage mode="register" />} />
+          {/* Login / register is the landing page. AuthLayout holds the
+              animation panel; `key` gives each mode a fresh, empty form. */}
+          <Route element={<AuthLayout />}>
+            <Route path="/" element={<AuthPage key="login" mode="login" />} />
+            <Route path="/login" element={<AuthPage key="login" mode="login" />} />
+            <Route path="/register" element={<AuthPage key="register" mode="register" />} />
+          </Route>
+
+          {/* Development check: API, database and login status */}
+          <Route path="/status" element={<StatusPage />} />
 
           {/* Logged-in pages, in the order a passenger visits them */}
           <Route element={<ProtectedRoute />}>
