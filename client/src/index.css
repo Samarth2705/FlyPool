@@ -1,6 +1,30 @@
 @import "tailwindcss";
 
+/* dark: classes apply when <html> has the "dark" class (see ThemeProvider.jsx) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Native date/time pickers and scrollbars follow the theme */
+.dark {
+  color-scheme: dark;
+}
+
 /* App-wide font (loaded in index.html) */
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Slowly moves dashed route lines forward (TravelBackdrop.jsx).
+   The dash pattern repeats every 12 units, so -120 loops seamlessly. */
+@keyframes route-flow {
+  to {
+    stroke-dashoffset: -120;
+  }
+}
+
+/* When a field is focused or scrolled to, keep it clear of the sticky navbar */
+@layer base {
+  input,
+  button {
+    scroll-margin-top: 10rem;
+  }
 }

@@ -9,8 +9,8 @@ import { useAuth } from '../hooks/useAuth';
 function StatusRow({ label, ok, text }) {
   return (
     <div className="flex items-center justify-between py-2">
-      <span className="text-slate-600">{label}</span>
-      <span className={`font-medium ${ok ? 'text-emerald-600' : 'text-rose-600'}`}>{text}</span>
+      <span className="text-slate-600 dark:text-slate-300">{label}</span>
+      <span className={`font-medium ${ok ? 'text-emerald-600' : 'text-rose-600 dark:text-rose-400'}`}>{text}</span>
     </div>
   );
 }
@@ -24,10 +24,10 @@ function AccountStatus() {
   if (user) {
     return (
       <div className="mt-4 flex items-center justify-between text-sm">
-        <span className="text-slate-600">
-          Logged in as <span className="font-medium text-slate-900">{user.name}</span>
+        <span className="text-slate-600 dark:text-slate-300">
+          Logged in as <span className="font-medium text-slate-900 dark:text-white">{user.name}</span>
         </span>
-        <button onClick={signOut} className="font-medium text-sky-600 hover:underline">
+        <button onClick={signOut} className="font-medium text-sky-600 dark:text-sky-400 hover:underline">
           Log out
         </button>
       </div>
@@ -35,12 +35,12 @@ function AccountStatus() {
   }
 
   return (
-    <p className="mt-4 text-center text-sm text-slate-500">
-      <Link to="/login" className="font-medium text-sky-600 hover:underline">
+    <p className="mt-4 text-center text-sm text-slate-500 dark:text-slate-400">
+      <Link to="/login" className="font-medium text-sky-600 dark:text-sky-400 hover:underline">
         Log in
       </Link>
       {' or '}
-      <Link to="/register" className="font-medium text-sky-600 hover:underline">
+      <Link to="/register" className="font-medium text-sky-600 dark:text-sky-400 hover:underline">
         create an account
       </Link>
     </p>
@@ -57,8 +57,8 @@ export default function StatusPage() {
 
   return (
     <PageContainer title="System status" subtitle="Development check for the API, database and login.">
-      <div className="divide-y divide-slate-100 border-y border-slate-100">
-        {!health && !error && <p className="py-2 text-slate-400">Checking server…</p>}
+      <div className="divide-y divide-slate-100 dark:divide-slate-800 border-y border-slate-100 dark:border-slate-800">
+        {!health && !error && <p className="py-2 text-slate-400 dark:text-slate-500">Checking server…</p>}
         {error && <StatusRow label="API" ok={false} text={error.message} />}
         {health && (
           <>

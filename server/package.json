@@ -5,7 +5,13 @@
   "main": "src/server.js",
   "scripts": {
     "dev": "node --watch-path=src --watch-path=.env src/server.js",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "seed:demo": "node src/seed/demoTravellers.js",
+    "migrate:pools": "node src/migrations/2026-10-shared-pools.js",
+    "check:data": "node src/scripts/checkData.js",
+    "test:unit": "node --test \"test/unit/*.test.js\"",
+    "test:integration": "node --test --test-concurrency=1 \"test/integration/*.test.js\""
   },
   "type": "module",
   "dependencies": {
@@ -23,5 +29,8 @@
   "engines": {
     "node": ">=20"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "mongodb-memory-server": "^10.1.4"
+  }
 }

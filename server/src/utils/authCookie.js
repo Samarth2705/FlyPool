@@ -8,7 +8,9 @@ export const AUTH_COOKIE_NAME = 'token';
 const cookieOptions = {
   httpOnly: true, // not readable from JavaScript
   secure: env.cookieSecure, // only sent over HTTPS when true
-  sameSite: 'lax', // not sent with cross-site form posts (CSRF protection)
+  // "lax" (default): not sent with cross-site form posts (CSRF protection).
+  // "none" only when the API and the app are on different sites (needs HTTPS).
+  sameSite: env.cookieSameSite,
   path: '/',
 };
 

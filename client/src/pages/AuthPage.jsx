@@ -3,12 +3,13 @@
 // After a successful login the user is sent to the page they originally
 // wanted (saved by ProtectedRoute), or to the trip details page.
 import { useState } from 'react';
-import { Navigate, useLocation } from 'react-router';
+import { useLocation } from 'react-router';
 import { motion } from 'framer-motion';
 import TextField from '../components/ui/TextField';
 import PasswordField from '../components/ui/PasswordField';
 import Button from '../components/ui/Button';
 import Spinner from '../components/ui/Spinner';
+import PostLoginRedirect from '../components/PostLoginRedirect';
 import { fadeInUp } from '../animations/variants';
 import { useAuth } from '../hooks/useAuth';
 import { login, register } from '../api/auth.api';
@@ -54,8 +55,9 @@ export default function AuthPage({ mode }) {
     );
   }
 
-  // Already logged in (or just logged in) -> leave this page
-  if (user) return <Navigate to={location.state?.from || '/trip/new'} replace />;
+  // Already logged in (or just logged in) -> go to the right page:
+  // the in-progress trip, or Trip Details (see utils/landing.js)
+  if (user) return <PostLoginRedirect from={location.state?.from} />;
 
   function handleChange(event) {
     const { name, value } = event.target;
@@ -76,7 +78,7 @@ export default function AuthPage({ mode }) {
       const loggedInUser = isLogin
         ? await login({ email: values.email, password: values.password })
         : await register(values);
-      setUser(loggedInUser); // triggers the <Navigate> above
+      setUser(loggedInUser); // triggers <PostLoginRedirect> above
     } catch (error) {
       if (error.code === 'VALIDATION_ERROR' && error.details) {
         // Show each server message under its own field
@@ -90,16 +92,16 @@ export default function AuthPage({ mode }) {
 
   return (
     <motion.div variants={fadeInUp} initial="hidden" animate="visible" className="mt-6 sm:mt-7">
-      <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">
+      <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-2xl">
         {isLogin ? 'Welcome back' : 'Create your account'}
       </h1>
-      <p className="mt-1 text-slate-500">
+      <p className="mt-1 text-slate-500 dark:text-slate-400">
         {isLogin ? 'Log in to find your ride from the airport.' : 'It takes less than a minute.'}
       </p>
 
       <form onSubmit={handleSubmit} noValidate className="mt-6 space-y-4">
         {formError && (
-          <p role="alert" className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
+          <p role="alert" className="flex items-start gap-2 rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/40 px-3.5 py-3 text-sm text-rose-700 dark:text-rose-300">
             <svg viewBox="0 0 20 20" className="mt-0.5 h-4 w-4 shrink-0 fill-current" aria-hidden="true">
               <path d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm0 4a1 1 0 0 1 1 1v3.5a1 1 0 1 1-2 0V7a1 1 0 0 1 1-1Zm0 8.5a1.1 1.1 0 1 1 0-2.2 1.1 1.1 0 0 1 0 2.2Z" />
             </svg>

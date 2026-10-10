@@ -10,6 +10,8 @@ const userSchema = new mongoose.Schema(
     // The bcrypt hash, never the real password.
     // select: false = left out of query results unless asked for with .select('+password')
     password: { type: String, required: true, select: false },
+    // Sample account created by `npm run seed:demo` (it cannot be logged into)
+    isDemo: { type: Boolean, default: false },
   },
   {
     timestamps: true, // adds createdAt and updatedAt

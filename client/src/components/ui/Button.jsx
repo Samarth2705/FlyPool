@@ -3,7 +3,7 @@
 // variant: "primary" (filled) or "secondary" (outlined)
 const variants = {
   primary: 'bg-sky-600 text-white shadow-lg shadow-sky-600/25 hover:bg-sky-700 focus-visible:ring-sky-300',
-  secondary: 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 focus-visible:ring-slate-200',
+  secondary: 'border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 focus-visible:ring-slate-200',
 };
 
 export default function Button({ children, loading = false, loadingText, variant = 'primary', className = '', ...props }) {

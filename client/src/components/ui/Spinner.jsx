@@ -1,7 +1,7 @@
 export default function Spinner({ fullScreen = false }) {
   const spinner = (
     <div
-      className="h-8 w-8 animate-spin rounded-full border-4 border-slate-200 border-t-sky-600"
+      className="h-8 w-8 animate-spin rounded-full border-4 border-slate-200 dark:border-slate-700 border-t-sky-600"
       role="status"
       aria-label="Loading"
     />
