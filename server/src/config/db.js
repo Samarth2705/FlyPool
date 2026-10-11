@@ -31,15 +31,42 @@ function watchConnection() {
   connection.on('error', (err) => console.error('MongoDB error:', hideCredentials(err.message)));
 }
 
-// Connects to MongoDB. If the first attempt fails (e.g. Atlas is unreachable),
-// it keeps retrying in the background instead of crashing the server.
-// Meanwhile the API stays up and /api/health reports "disconnected".
+let opening = null; // the connection attempt in progress, shared by everyone waiting
+let watching = false;
+
+// Opens the connection if it isn't open yet. Callers that arrive while an
+// attempt is running share it. Rejects if MongoDB can't be reached.
+// Used at startup (connectDB below) and per request on serverless hosts
+// such as Vercel, where server.js never runs (middleware/requireDatabase.js).
+export function ensureDBConnection() {
+  if (connection.readyState === 1) return Promise.resolve();
+  if (!opening) {
+    // Give up after 10 seconds instead of hanging if Atlas can't be reached
+    opening = mongoose
+      .connect(env.mongodbUri, { serverSelectionTimeoutMS: 10000 })
+      .then(() => {
+        console.log(`MongoDB connected: ${connection.host}/${connection.name}`);
+        if (!watching) {
+          watchConnection();
+          watching = true;
+        }
+      })
+      .finally(() => {
+        opening = null;
+      });
+  }
+  return opening;
+}
+
+export { connectionHint };
+
+// Connects to MongoDB at server startup. If the first attempt fails (e.g.
+// Atlas is unreachable), it keeps retrying in the background instead of
+// crashing the server. Meanwhile the API stays up and /api/health reports
+// "disconnected".
 export async function connectDB() {
   try {
-    // Give up after 10 seconds instead of hanging if Atlas can't be reached
-    await mongoose.connect(env.mongodbUri, { serverSelectionTimeoutMS: 10000 });
-    console.log(`MongoDB connected: ${connection.host}/${connection.name}`);
-    watchConnection();
+    await ensureDBConnection();
   } catch (err) {
     console.error(`Could not connect to MongoDB: ${hideCredentials(err.message)}`);
     console.error(connectionHint(err));

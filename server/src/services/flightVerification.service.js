@@ -22,7 +22,8 @@ import { AppError } from '../utils/AppError.js';
 import { parseFlightNumber, nameMatchesAirline } from '../data/airlines.js';
 import { env } from '../config/env.js';
 
-export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024; // 5 MB
+// 3 MB: base64 makes it ~4 MB, under the ~4.5 MB request limit of serverless hosts (Vercel)
+export const MAX_DOCUMENT_BYTES = 3 * 1024 * 1024;
 
 // The first bytes ("magic numbers") of each allowed file type
 const FILE_SIGNATURES = {
@@ -48,7 +49,7 @@ export function inspectDocument({ mimeType, dataBase64 }) {
   const bytes = Buffer.from(dataBase64, 'base64');
 
   if (bytes.length === 0) fail('The document is empty.');
-  if (bytes.length > MAX_DOCUMENT_BYTES) fail('The document is larger than 5 MB.');
+  if (bytes.length > MAX_DOCUMENT_BYTES) fail('The document is larger than 3 MB.');
   if (!FILE_SIGNATURES[mimeType]?.matches(bytes)) {
     fail('This file is not a valid JPG, PNG, WebP or PDF document.');
   }

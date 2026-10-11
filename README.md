@@ -71,7 +71,7 @@ Trip statuses: `awaiting_verification` → `flight_verified` → `ride_selected`
 | GET | `/api/trips/current` | – | The trip to resume after login (`{ trip, nextStep }`, both `null` if none) |
 | GET | `/api/trips/:tripId` | – | Only the trip's owner can read it (others get 404) |
 | PATCH | `/api/trips/:tripId` | Trip-detail fields, **or** `{ "status": "cancelled" }` | Details can change only before the flight is verified. Owner, status, verification, pool and fare fields can't be set |
-| POST | `/api/trips/:tripId/verification` | `airline`, `flightNumber`, `scheduledArrivalTime`, `document` (`mimeType`, `dataBase64`; JPG/PNG/WebP/PDF, max 5 MB) | Page 3. **Demo verification** (see below) |
+| POST | `/api/trips/:tripId/verification` | `airline`, `flightNumber`, `scheduledArrivalTime`, `document` (`mimeType`, `dataBase64`; JPG/PNG/WebP/PDF, max 3 MB) | Page 3. **Demo verification** (see below) |
 | GET | `/api/trips/:tripId/matches` | – | Page 4: compatible travellers (no personal details), shared rides you can join per vehicle, solo estimates. Verified trips only. Never creates anything |
 | PUT | `/api/trips/:tripId/ride` | `mode` (`shared`/`solo`), `vehicleType` (`sedan`/`suv`), `poolId` (optional) | Page 4 → 5. Shared + `poolId` joins that shared ride, shared without it starts one, solo leaves any open shared ride. Re-sending the same choice changes nothing. **A ride request - not a booking, no driver** |
 | GET | `/api/trips/:tripId/ride` | – | The saved ride choice (Page 5) |

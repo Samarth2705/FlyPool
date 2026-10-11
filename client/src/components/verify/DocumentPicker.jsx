@@ -134,7 +134,7 @@ export default function DocumentPicker({ value, onChange, error }) {
           >
             <UploadIcon className="h-7 w-7 text-sky-600 dark:text-sky-400" />
             <span className="font-semibold text-slate-800 dark:text-slate-100">Upload a file</span>
-            <span className="text-xs text-slate-500 dark:text-slate-400">JPG, PNG, WebP or PDF · max 5 MB</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">JPG, PNG, WebP or PDF · max 3 MB</span>
           </button>
         </div>
       )}

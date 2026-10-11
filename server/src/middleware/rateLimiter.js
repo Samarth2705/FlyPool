@@ -22,7 +22,7 @@ export const authLimiter = limiter({
   message: 'Too many attempts. Please wait a few minutes and try again.',
 });
 
-// Flight verification (accepts up to 5 MB uploads): per account
+// Flight verification (accepts up to 3 MB uploads): per account
 export const verificationLimiter = limiter({
   windowMinutes: 15,
   limit: 10,

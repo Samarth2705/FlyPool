@@ -1,7 +1,7 @@
 // Boarding pass / e-ticket file checks (Page 3). The server checks the
 // real file contents again; these give instant feedback.
 
-export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024; // 5 MB, same as the server
+export const MAX_DOCUMENT_BYTES = 3 * 1024 * 1024; // 3 MB, same as the server
 
 const TYPES_BY_EXTENSION = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf' };
 export const ALLOWED_DOCUMENT_TYPES = [...new Set(Object.values(TYPES_BY_EXTENSION))];
@@ -18,7 +18,7 @@ export function documentType(file) {
 export function checkDocumentFile(file) {
   if (!documentType(file)) return 'Please choose a JPG, PNG, WebP or PDF file.';
   if (file.size === 0) return 'That file is empty.';
-  if (file.size > MAX_DOCUMENT_BYTES) return 'That file is larger than 5 MB. Please choose a smaller file.';
+  if (file.size > MAX_DOCUMENT_BYTES) return 'That file is larger than 3 MB. Please choose a smaller file.';
   return null;
 }
 
