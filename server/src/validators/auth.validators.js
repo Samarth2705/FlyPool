@@ -32,6 +32,11 @@ export const registerSchema = z.object({
     .max(72, 'Password must be at most 72 characters.'),
 });
 
+// DELETE /api/auth/me - confirm with the account's password
+export const deleteAccountSchema = z.object({
+  password: z.string({ error: 'Password is required.' }).min(1, 'Password is required.'),
+});
+
 export const loginSchema = z.object({
   email,
   password: z.string({ error: 'Password is required.' }).min(1, 'Password is required.'),

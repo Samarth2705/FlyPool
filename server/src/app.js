@@ -39,6 +39,13 @@ app.post('/api/trips/:tripId/verification', requireAuth, verificationLimiter, ex
 // Everything else: small JSON bodies only
 app.use(express.json({ limit: '10kb' }));
 
+// API responses hold personal data and change often: never let the browser
+// or a proxy cache them (e.g. so Back after logout can't show a cached page).
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 // All API routes live under /api (see routes/index.js). They need MongoDB, so
 // make sure it is connected first (matters on serverless hosts like Vercel).
 app.use('/api', requireDatabase, apiRoutes);

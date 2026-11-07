@@ -3,6 +3,7 @@
 // no real data is touched. Run with: npm run test:integration
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 
 // ---- environment for the app under test (set before importing it) -----------
@@ -26,13 +27,14 @@ const { registerFlightVerifier } = await import('../../src/services/flightVerifi
 const { Trip } = await import('../../src/models/Trip.js');
 const { Pool } = await import('../../src/models/Pool.js');
 const { User } = await import('../../src/models/User.js');
+const { RevokedToken } = await import('../../src/models/RevokedToken.js');
 
 let server;
 let base;
 
 before(async () => {
   await mongoose.connect(process.env.MONGODB_URI);
-  await Promise.all([User.init(), Trip.init(), Pool.init()]); // build unique indexes first
+  await Promise.all([User.init(), Trip.init(), Pool.init(), RevokedToken.init()]); // build unique indexes first
   server = app.listen(0);
   base = `http://127.0.0.1:${server.address().port}/api`;
 });
@@ -55,7 +57,7 @@ let userCounter = 0;
 
 function client(ip) {
   let cookie = '';
-  return async (method, path, body) => {
+  const call = async (method, path, body) => {
     const res = await fetch(base + path, {
       method,
       headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, ...(cookie ? { cookie } : {}) },
@@ -64,8 +66,16 @@ function client(ip) {
     const setCookie = res.headers.get('set-cookie');
     if (setCookie) cookie = setCookie.split(';')[0];
     const json = await res.json();
-    return { status: res.status, ...json };
+    return { status: res.status, headers: res.headers, ...json };
   };
+  call.cookie = () => cookie; // the current "token=..." cookie, to replay it in tests
+  return call;
+}
+
+// One request with a given cookie, e.g. a copy of a token taken before logout
+async function withCookie(cookie, method, path) {
+  const res = await fetch(base + path, { method, headers: { cookie } });
+  return { status: res.status, setCookie: res.headers.get('set-cookie'), ...(await res.json()) };
 }
 
 async function newUser() {
@@ -133,6 +143,225 @@ test('signup, login, logout, duplicate accounts and wrong passwords', async () =
   assert.equal((await api('GET', '/trips')).status, 401);
   const relog = await api('POST', '/auth/login', { email, password: 'secret123' });
   assert.equal(relog.status, 200);
+});
+
+test('logout ends the session on the server, not just in the browser', async () => {
+  const { api } = await newUser();
+  const stolenCopy = api.cookie();
+  assert.equal((await withCookie(stolenCopy, 'GET', '/trips')).status, 200);
+
+  const out = await api('POST', '/auth/logout');
+  assert.equal(out.status, 200);
+  assert.match(out.headers.get('set-cookie'), /token=;/); // cookie cleared
+
+  // The copied token no longer works anywhere, and its cookie is cleared again
+  const replay = await withCookie(stolenCopy, 'GET', '/trips');
+  assert.equal(replay.status, 401);
+  assert.equal(replay.error.code, 'INVALID_TOKEN');
+  assert.match(replay.setCookie, /token=;/);
+  assert.equal((await withCookie(stolenCopy, 'GET', '/auth/me')).status, 401);
+  assert.equal((await withCookie(stolenCopy, 'POST', `/trips/${'a'.repeat(24)}/verification`)).status, 401);
+
+  // Only a hash is stored, never the token, and it expires with the token
+  const entry = await RevokedToken.findOne().lean();
+  assert.ok(!JSON.stringify(entry).includes(stolenCopy.split('=')[1]));
+  assert.ok(entry.expiresAt > new Date());
+
+  // Logging out twice, or with no cookie at all, is harmless
+  assert.equal((await withCookie(stolenCopy, 'POST', '/auth/logout')).status, 200);
+  assert.equal((await withCookie('', 'POST', '/auth/logout')).status, 200);
+});
+
+test('expired, tampered and wrongly signed tokens are rejected and cleared', async () => {
+  const { default: jwt } = await import('jsonwebtoken');
+  const { userId } = await newUser();
+  const expired = jwt.sign({ sub: userId, exp: Math.floor(Date.now() / 1000) - 60 }, process.env.JWT_SECRET);
+  const otherKey = jwt.sign({ sub: userId }, 'some-other-secret-that-is-long-enough-000');
+  const unsigned = jwt.sign({ sub: userId }, null, { algorithm: 'none' });
+  for (const token of [expired, otherKey, unsigned, 'garbage']) {
+    const res = await withCookie(`token=${token}`, 'GET', '/trips');
+    assert.equal(res.status, 401);
+    assert.equal(res.error.code, 'INVALID_TOKEN');
+    assert.match(res.setCookie, /token=;/);
+  }
+  assert.equal((await withCookie('', 'GET', '/trips')).error.code, 'AUTH_REQUIRED');
+});
+
+test('API responses are never cached', async () => {
+  const { api } = await newUser();
+  assert.equal((await api('GET', '/auth/me')).headers.get('cache-control'), 'no-store');
+});
+
+// ---- 1b. mobile app sessions (bearer tokens) -------------------------------------
+let mobileCounter = 0;
+
+// A client that behaves like the app: bearer token, never cookies
+function mobileClient(ip, token = null) {
+  const call = async (method, path, body) => {
+    const res = await fetch(base + path, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Forwarded-For': ip,
+        ...(call.token ? { Authorization: `Bearer ${call.token}` } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: res.status, headers: res.headers, ...(await res.json()) };
+  };
+  call.token = token;
+  return call;
+}
+
+async function newMobileUser() {
+  mobileCounter += 1;
+  const n = mobileCounter;
+  const api = mobileClient(`10.20.${Math.floor(n / 250)}.${n % 250}`);
+  const details = { name: `Mobile User ${n}`, email: `mobile${n}@test.flypool.invalid`, phone: `8${String(100000000 + n)}`, password: 'secret123' };
+  const res = await api('POST', '/auth/mobile/register', details);
+  assert.equal(res.status, 201, JSON.stringify(res.error));
+  api.token = res.data.token;
+  return { api, ...details, userId: res.data.user.id, registered: res };
+}
+
+test('mobile register/login return { user, token, expiresAt } and set no cookie', async () => {
+  const { default: jwt } = await import('jsonwebtoken');
+  const { api, email, registered } = await newMobileUser();
+
+  assert.deepEqual(Object.keys(registered.data).sort(), ['expiresAt', 'token', 'user']);
+  assert.equal(registered.headers.get('set-cookie'), null);
+  assert.equal(registered.data.user.password, undefined);
+  const payload = jwt.decode(registered.data.token);
+  assert.equal(payload.typ, 'mobile');
+  assert.equal(payload.sub, registered.data.user.id);
+  // 30 days by default, and expiresAt is the token's real expiry
+  const days = (new Date(registered.data.expiresAt) - Date.now()) / 86_400_000;
+  assert.ok(days > 29.9 && days <= 30, `expires in ${days} days`);
+  assert.equal(new Date(registered.data.expiresAt).getTime(), payload.exp * 1000);
+
+  // The token works on protected routes
+  const me = await api('GET', '/auth/me');
+  assert.equal(me.status, 200);
+  assert.equal(me.data.user.email, email);
+  assert.equal((await api('GET', '/trips')).status, 200);
+
+  // Login: same checks and messages as the website
+  const anon = mobileClient('10.21.0.1');
+  const login = await anon('POST', '/auth/mobile/login', { email, password: 'secret123' });
+  assert.equal(login.status, 200);
+  assert.equal(login.headers.get('set-cookie'), null);
+  assert.equal(jwt.decode(login.data.token).typ, 'mobile');
+  const wrong = await anon('POST', '/auth/mobile/login', { email, password: 'wrongpass' });
+  assert.equal(wrong.status, 401);
+  assert.equal(wrong.error.message, 'Email or password is incorrect.');
+  const invalid = await mobileClient('10.21.0.2')('POST', '/auth/mobile/register', { name: 'A B', email: 'x@y.co', phone: '123', password: 'secret123' });
+  assert.equal(invalid.error.code, 'VALIDATION_ERROR');
+  assert.equal(invalid.error.details[0].message, 'Enter a valid 10-digit mobile number.');
+  const dupe = await mobileClient('10.21.0.3')('POST', '/auth/mobile/register', { name: 'A B', email, phone: '9876511111', password: 'secret123' });
+  assert.equal(dupe.error.code, 'EMAIL_TAKEN');
+});
+
+test('mobile and website tokens only work on their own channel', async () => {
+  const { api: mobile } = await newMobileUser();
+  const { api: web } = await newUser();
+  const webToken = web.cookie().split('=')[1];
+
+  // App token sent as the website cookie: refused (and the cookie cleared)
+  const asCookie = await withCookie(`token=${mobile.token}`, 'GET', '/trips');
+  assert.equal(asCookie.status, 401);
+  assert.equal(asCookie.error.code, 'INVALID_TOKEN');
+  // Website token sent as a bearer token: refused
+  assert.equal((await mobileClient('10.22.0.1', webToken)('GET', '/trips')).error.code, 'INVALID_TOKEN');
+  // Malformed Authorization headers: refused, never ignored
+  for (const header of ['Bearer', 'Basic abc', `Bearer ${mobile.token} extra`, 'bearer']) {
+    const res = await fetch(`${base}/trips`, { headers: { Authorization: header, 'X-Forwarded-For': '10.22.0.2' } });
+    assert.equal(res.status, 401, header);
+  }
+  // The website's own cookie login still works exactly as before
+  assert.equal((await web('GET', '/auth/me')).status, 200);
+});
+
+test('mobile logout revokes only that device token', async () => {
+  const { api: phone, email } = await newMobileUser();
+  const tablet = mobileClient('10.23.0.1');
+  tablet.token = (await tablet('POST', '/auth/mobile/login', { email, password: 'secret123' })).data.token;
+  const stolenCopy = phone.token;
+
+  assert.equal((await phone('POST', '/auth/logout')).status, 200);
+  const replay = await mobileClient('10.23.0.2', stolenCopy)('GET', '/auth/me');
+  assert.equal(replay.status, 401);
+  assert.equal(replay.error.code, 'INVALID_TOKEN');
+  assert.equal((await tablet('GET', '/auth/me')).status, 200); // other device still logged in
+});
+
+test('trips created with a bearer token persist and are idempotent per clientRequestId', async () => {
+  const { api, userId } = await newMobileUser();
+  const clientRequestId = crypto.randomUUID();
+  const first = await api('POST', '/trips', { ...tripBody(), clientRequestId });
+  const again = await api('POST', '/trips', { ...tripBody(), clientRequestId });
+  assert.equal(first.status, 201);
+  assert.equal(again.status, 200);
+  assert.equal(again.data.trip.id, first.data.trip.id);
+  const saved = await Trip.find({ userId });
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].destination, 'Andheri West');
+});
+
+test('deleting an account removes the user, cancels upcoming trips, keeps past ones', async () => {
+  const user = await newMobileUser();
+  const web = client('10.24.0.1');
+  assert.equal((await web('POST', '/auth/login', { email: user.email, password: 'secret123' })).status, 200);
+
+  // An upcoming trip in a shared ride (own date, so other tests never match it), and a past trip
+  const upcoming = await passenger({ user: { api: user.api }, travelDate: '2026-12-27' });
+  assert.equal((await choose(upcoming, { mode: 'shared', vehicleType: 'sedan' })).status, 200);
+  const poolId = (await Trip.findById(upcoming.id)).poolId;
+  const past = await Trip.create({
+    userId: user.userId,
+    pickupLocation: AIRPORT,
+    pickupTerminal: 'T1',
+    destination: 'Powai',
+    travelDate: '2025-01-10',
+    expectedArrivalTime: '09:00',
+    arrivalAt: new Date('2025-01-10T03:30:00Z'),
+    passengerCount: 1,
+    luggageCount: 1,
+    status: 'ride_selected',
+  });
+
+  const wrong = await user.api('DELETE', '/auth/me', { password: 'not-it' });
+  assert.equal(wrong.status, 403);
+  assert.equal(wrong.error.code, 'INVALID_PASSWORD');
+  assert.ok(await User.exists({ _id: user.userId }));
+
+  const missing = await user.api('DELETE', '/auth/me', {});
+  assert.equal(missing.error.code, 'VALIDATION_ERROR');
+
+  assert.equal((await user.api('DELETE', '/auth/me', { password: 'secret123' })).status, 200);
+
+  assert.equal(await User.exists({ _id: user.userId }), null); // name, email, phone, password gone
+  const cancelled = await Trip.findById(upcoming.id);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.poolId, null);
+  const pool = await Pool.findById(poolId);
+  assert.ok(!pool.members.some((m) => String(m.tripId) === upcoming.id)); // seat freed
+  const kept = await Trip.findById(past.id);
+  assert.equal(kept.status, 'ride_selected'); // past trip kept as it was
+
+  // Every session of the account stops working: this app token and the website cookie
+  assert.equal((await user.api('GET', '/auth/me')).status, 401);
+  assert.equal((await web('GET', '/trips')).status, 401);
+  // The email and phone can be used again
+  const again = await mobileClient('10.24.0.2')('POST', '/auth/mobile/register', {
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    password: 'secret123',
+  });
+  assert.equal(again.status, 201);
+
+  // Leave the database as other tests expect it (they count shared rides)
+  await Pool.deleteOne({ _id: poolId });
 });
 
 test('login attempts are rate limited per IP', async () => {
