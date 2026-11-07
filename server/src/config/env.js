@@ -2,6 +2,7 @@
 // Every other file imports `env` from here instead of reading process.env directly.
 // In production, unsafe settings stop the server instead of running insecurely.
 import dotenv from 'dotenv';
+import jwt from 'jsonwebtoken';
 
 dotenv.config({ quiet: true });
 
@@ -41,6 +42,21 @@ if (cookieSameSite === 'none' && !cookieSecure) {
   fail('COOKIE_SAME_SITE=none needs COOKIE_SECURE=true (browsers reject it otherwise).');
 }
 
+// JWT_EXPIRES_IN / JWT_MOBILE_EXPIRES_IN: how long a login lasts, e.g. "7d"
+// or "12h". Checked here, with the same rules jsonwebtoken uses, so a bad
+// value stops the server with a clear message instead of every login failing
+// with "expiresIn should be a number of seconds or string...". Surrounding
+// spaces (easy to paste into a dashboard) are ignored.
+function readDuration(name, fallback) {
+  const value = process.env[name]?.trim() || fallback;
+  try {
+    jwt.sign({}, 'duration-check', { expiresIn: value });
+  } catch {
+    fail(`${name} must be a timespan such as 7d, 12h or 30m (no quotes).`);
+  }
+  return value;
+}
+
 // FLIGHT_VERIFICATION_MODE: "demo" (consistency checks only, clearly
 // labelled) or "off". Production defaults to "off" so demo results can't be
 // mistaken for real verification - set "demo" there only on purpose.
@@ -61,7 +77,8 @@ export const env = {
   port: Number(process.env.PORT) || 5000,
   mongodbUri: process.env.MONGODB_URI,
   jwtSecret: process.env.JWT_SECRET,
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '1d',
+  jwtExpiresIn: readDuration('JWT_EXPIRES_IN', '1d'), // website login cookie
+  jwtMobileExpiresIn: readDuration('JWT_MOBILE_EXPIRES_IN', '30d'), // mobile app bearer token
   clientOrigin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
   cookieSecure,
   cookieSameSite,
