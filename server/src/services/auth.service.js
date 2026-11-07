@@ -3,6 +3,7 @@
 import bcrypt from 'bcryptjs';
 import { User } from '../models/User.js';
 import { AppError } from '../utils/AppError.js';
+import { notifyWelcome, quietly } from './notification.service.js';
 
 // How much work bcrypt does per hash. Higher = slower to crack, slower to log in.
 const SALT_ROUNDS = 10;
@@ -21,7 +22,9 @@ export async function registerUser({ name, email, phone, password }) {
   }
 
   const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-  return User.create({ name, email, phone, password: hashedPassword });
+  const user = await User.create({ name, email, phone, password: hashedPassword });
+  await quietly('welcome', () => notifyWelcome(user));
+  return user;
 }
 
 export async function loginUser({ email, password }) {

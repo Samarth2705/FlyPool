@@ -56,6 +56,23 @@ export function splitEqually(total, people) {
 // Returns null if any drop-off has no known location.
 // shares[key] is that group's part of the total (partySize × per-person,
 // with the ₹1 rounding leftovers going to the earliest members).
+// How a total came about, from the same pricing rules (config/pricing.js):
+// base fare + distance charge, raised to the vehicle's minimum fare if lower,
+// then rounded. No other charges exist in the rules (see FARE_ASSUMPTIONS).
+export function fareBreakdown(vehicle, roadKm, total) {
+  const distanceCharge = Math.round(vehicle.perKm * roadKm);
+  const raw = vehicle.baseFare + vehicle.perKm * roadKm;
+  return {
+    baseFare: vehicle.baseFare,
+    perKm: vehicle.perKm,
+    roadKm: Math.round(roadKm * 10) / 10,
+    distanceCharge,
+    minimumFare: vehicle.minimumFare,
+    minimumApplied: raw < vehicle.minimumFare,
+    roundingAdjustment: total - Math.round(Math.max(raw, vehicle.minimumFare)),
+  };
+}
+
 export function estimateRideFare(vehicle, members) {
   if (members.length === 0 || members.some((m) => !m.point)) return null;
 
@@ -76,6 +93,7 @@ export function estimateRideFare(vehicle, members) {
     currency: 'INR',
     total,
     people,
+    breakdown: fareBreakdown(vehicle, roadKm, total),
     perPerson: { min: split.min, max: split.max },
     roadKm: Math.round(roadKm * 10) / 10,
     shares,

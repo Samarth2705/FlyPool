@@ -55,6 +55,34 @@ const verificationSchema = new Schema(
   { _id: false },
 );
 
+// The booking, once the passenger confirms their ride (POST
+// /api/trips/:tripId/booking - services/booking.service.js). A confirmed
+// booking means FlyPool saved it; there is no payment or driver yet.
+// What was booked is kept as a snapshot (ride, travellers, fare estimate at
+// that moment), because a shared ride's other bookings can still change.
+//   status  confirmed -> cancelled  (Cancel Booking: the trip is cancelled too)
+//           confirmed -> left_pool  (Leave Pool: the passenger left the shared
+//                                    ride; the booking ends and moves to
+//                                    trip.pastBookings, the trip goes on)
+const bookingSchema = new Schema(
+  {
+    reference: { type: String, required: true }, // e.g. "FP-7K3Q9M2X", made by the server
+    status: { type: String, enum: ['confirmed', 'cancelled', 'left_pool'], required: true },
+    confirmedAt: { type: Date, required: true },
+    cancelledAt: { type: Date },
+    cancelReason: { type: String, maxlength: 200 }, // optional, from the passenger
+    endedAt: { type: Date }, // when a booking ended by leaving its shared ride
+    mode: { type: String, enum: ['shared', 'solo'], required: true },
+    vehicleType: { type: String, enum: ['sedan', 'suv'], required: true },
+    vehicle: { type: Schema.Types.Mixed }, // { type, label, seats, bags }
+    poolId: { type: String, default: null },
+    partySize: { type: Number, required: true },
+    travellers: { type: [Schema.Types.Mixed], default: [] }, // other bookings in the shared ride (public facts only)
+    fare: { type: Schema.Types.Mixed, default: null }, // the estimate shown when confirming (null if none)
+  },
+  { _id: false },
+);
+
 const tripSchema = new Schema(
   {
     // Who owns the trip - always taken from the login cookie, never the request body
@@ -91,6 +119,12 @@ const tripSchema = new Schema(
     soloFareEstimate: { type: Schema.Types.Mixed, default: null },
     rideSelectedAt: { type: Date },
 
+    // Set when the passenger confirms the booking (see bookingSchema)
+    booking: { type: bookingSchema, default: null },
+    // Earlier bookings of this trip that ended without cancelling the trip
+    // (the passenger left the shared ride) - kept for history
+    pastBookings: { type: [bookingSchema], default: [] },
+
     // Random id sent by Page 2 once per form, so retries don't create duplicates
     clientRequestId: { type: String },
 
@@ -117,6 +151,8 @@ const tripSchema = new Schema(
 tripSchema.index({ userId: 1, updatedAt: -1 });
 // Matching: verified trips arriving around a given time
 tripSchema.index({ status: 1, arrivalAt: 1 });
+// Booking references are unique
+tripSchema.index({ 'booking.reference': 1 }, { unique: true, partialFilterExpression: { 'booking.reference': { $type: 'string' } } });
 // One trip per form submission per user (only when an id was sent)
 tripSchema.index(
   { userId: 1, clientRequestId: 1 },

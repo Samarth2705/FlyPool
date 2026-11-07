@@ -13,6 +13,7 @@ import { requireAuth } from './middleware/requireAuth.js';
 import { verificationLimiter } from './middleware/rateLimiter.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { requireDatabase } from './middleware/requireDatabase.js';
+import { paymentWebhook } from './controllers/payment.controller.js';
 
 const app = express();
 
@@ -35,6 +36,11 @@ app.use(cookieParser());
 // logged-in, rate-limited user, checked BEFORE the body is read. It must come
 // before the general parser: once a body is parsed, that parser skips it.
 app.post('/api/trips/:tripId/verification', requireAuth, verificationLimiter, express.json({ limit: '5mb' }));
+
+// Payment provider webhooks: the signature is over the exact bytes sent, so
+// this route reads the raw body (before the JSON parser). No login - the
+// signature authenticates it (services/payment.service.js).
+app.post('/api/payments/webhook', express.raw({ type: '*/*', limit: '100kb' }), requireDatabase, paymentWebhook);
 
 // Everything else: small JSON bodies only
 app.use(express.json({ limit: '10kb' }));

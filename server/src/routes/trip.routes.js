@@ -10,7 +10,14 @@ import {
   getMatches,
   getRide,
   chooseRide,
+  confirmBooking,
+  getBookingManagement,
+  cancelBooking,
+  leaveSharedRide,
 } from '../controllers/trip.controller.js';
+import { getPaymentView, startPayment } from '../controllers/payment.controller.js';
+import { startPaymentSchema } from '../validators/payment.validators.js';
+import { paymentLimiter } from '../middleware/rateLimiter.js';
 import { validate } from '../middleware/validate.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { AppError } from '../utils/AppError.js';
@@ -20,6 +27,9 @@ import {
   updateTripSchema,
   flightVerificationSchema,
   rideChoiceSchema,
+  bookingConfirmSchema,
+  cancelBookingSchema,
+  leavePoolSchema,
 } from '../validators/trip.validators.js';
 
 const router = Router();
@@ -47,5 +57,17 @@ router.post('/:tripId/verification', validate(flightVerificationSchema), verifyF
 router.get('/:tripId/matches', getMatches);
 router.get('/:tripId/ride', getRide);
 router.put('/:tripId/ride', tripWriteLimiter, validate(rideChoiceSchema), chooseRide);
+
+// Booking summary -> confirmation (no payment yet)
+router.post('/:tripId/booking', tripWriteLimiter, validate(bookingConfirmSchema), confirmBooking);
+
+// Ride Management: view, cancel the booking (and its trip), leave the shared ride
+router.get('/:tripId/booking', getBookingManagement);
+router.post('/:tripId/booking/cancel', tripWriteLimiter, validate(cancelBookingSchema), cancelBooking);
+router.post('/:tripId/booking/leave-pool', tripWriteLimiter, validate(leavePoolSchema), leaveSharedRide);
+
+// Payment for the booking (amount worked out by the server)
+router.get('/:tripId/payment', getPaymentView);
+router.post('/:tripId/payment', paymentLimiter, validate(startPaymentSchema), startPayment);
 
 export default router;

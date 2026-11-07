@@ -77,6 +77,28 @@ export const rideChoiceSchema = z
   .strict('This field cannot be set.')
   .refine((body) => body.mode === 'shared' || !body.poolId, 'A solo ride cannot join a shared ride.');
 
+// POST /api/trips/:tripId/booking - optionally, what the passenger reviewed
+// on the summary; if the saved ride no longer matches, the server asks them
+// to review again instead of booking something else.
+export const bookingConfirmSchema = z
+  .object({
+    mode: z.enum(['shared', 'solo']).optional(),
+    vehicleType: z.enum(['sedan', 'suv']).optional(),
+    poolId: z.string().regex(/^[a-f0-9]{24}$/, 'Invalid shared ride.').nullable().optional(),
+    yourShare: z.number().int().nonnegative().nullable().optional(),
+  })
+  .strict('This field cannot be set.');
+
+// POST /api/trips/:tripId/booking/cancel - an optional reason
+export const cancelBookingSchema = z
+  .object({
+    reason: z.string().trim().max(200, 'Keep the reason under 200 characters.').optional(),
+  })
+  .strict('This field cannot be set.');
+
+// POST /api/trips/:tripId/booking/leave-pool - no fields
+export const leavePoolSchema = z.object({}).strict('This field cannot be set.');
+
 // The trip-details fields from Page 2 (used for creating and editing)
 const tripDetailsFields = {
   pickupLocation: z

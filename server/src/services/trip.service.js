@@ -4,6 +4,7 @@
 // owner's userId from the login cookie and only ever touches that user's trips.
 import { Trip } from '../models/Trip.js';
 import { AppError } from '../utils/AppError.js';
+import { notifyCompatibleTravellers, quietly } from './notification.service.js';
 import { todayInMumbai, tripDetailsSchema, MUMBAI_AIRPORT } from '../validators/trip.validators.js';
 import { inspectDocument, verifyFlightDetails } from './flightVerification.service.js';
 import { VERIFIED_STATUSES } from './matching.service.js';
@@ -171,5 +172,7 @@ export async function verifyFlight(tripId, userId, { airline, flightNumber, sche
     const failed = result.checks.filter((c) => !c.passed);
     throw new AppError(422, 'VERIFICATION_FAILED', failed[0].message, failed);
   }
+  // Passengers whose trips are compatible with this one hear about it
+  await quietly('compatible_traveller', () => notifyCompatibleTravellers(trip));
   return trip;
 }

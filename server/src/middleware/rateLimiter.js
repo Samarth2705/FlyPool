@@ -37,3 +37,27 @@ export const tripWriteLimiter = limiter({
   perUser: true,
   message: 'Too many changes in a short time. Please wait a few minutes and try again.',
 });
+
+// Group chat: per account - enough for a conversation, not for a flood
+export const chatMessageLimiter = limiter({
+  windowMinutes: 1,
+  limit: 30,
+  perUser: true,
+  message: 'You’re sending messages too quickly. Please wait a moment.',
+});
+
+// Push token changes (login / logout on a phone)
+export const deviceTokenLimiter = limiter({
+  windowMinutes: 15,
+  limit: 20,
+  perUser: true,
+  message: 'Too many changes in a short time. Please wait a few minutes and try again.',
+});
+
+// Starting / completing payments: per account
+export const paymentLimiter = limiter({
+  windowMinutes: 15,
+  limit: 30,
+  perUser: true,
+  message: 'Too many payment attempts in a short time. Please wait a few minutes and try again.',
+});

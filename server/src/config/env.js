@@ -62,7 +62,18 @@ function readDuration(name, fallback) {
 // mistaken for real verification - set "demo" there only on purpose.
 const flightVerificationMode = (process.env.FLIGHT_VERIFICATION_MODE || (isProduction ? 'off' : 'demo')).toLowerCase();
 
+// PAYMENT_MODE: "demo" (simulated payments, clearly labelled - no money
+// moves) or "off". No real payment provider is connected yet, so nothing
+// else is accepted. Production defaults to "off".
+const paymentMode = (process.env.PAYMENT_MODE || (isProduction ? 'off' : 'demo')).toLowerCase();
+if (!['demo', 'off'].includes(paymentMode)) {
+  fail('PAYMENT_MODE must be "demo" or "off" - no real payment provider is connected yet.');
+}
+
 if (isProduction) {
+  if (paymentMode === 'demo') {
+    console.warn('[config] WARNING: PAYMENT_MODE=demo in production - payments are simulated, no money is collected.');
+  }
   if (!process.env.CLIENT_ORIGIN) fail('CLIENT_ORIGIN is required in production (the URL of the React app).');
   if (!cookieSecure) fail('COOKIE_SECURE=true is required in production (serve the site over HTTPS).');
   if (flightVerificationMode === 'demo') {
@@ -84,6 +95,16 @@ export const env = {
   cookieSameSite,
   trustProxy: readTrustProxy(process.env.TRUST_PROXY),
   flightVerificationMode,
+  // Push notifications through Expo's push service (off unless set to "true").
+  // EXPO_ACCESS_TOKEN is only needed if "enhanced push security" is turned on
+  // for the Expo project. See services/push.service.js.
+  expoPushEnabled: process.env.EXPO_PUSH_ENABLED === 'true',
+  expoAccessToken: process.env.EXPO_ACCESS_TOKEN || null,
+  // Payments (services/payment.service.js)
+  paymentMode,
+  // Signs payment provider webhooks (HMAC-SHA256 of the raw body, header
+  // X-Razorpay-Signature). Without it the webhook endpoint refuses events.
+  paymentWebhookSecret: process.env.PAYMENT_WEBHOOK_SECRET || null,
   // How long a flight-verification service may take before we give up
   verificationTimeoutMs: Number(process.env.VERIFICATION_TIMEOUT_MS) || 10000,
   // One line per request (method, path, status, time) - never bodies or cookies

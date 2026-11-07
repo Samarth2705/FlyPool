@@ -13,6 +13,14 @@ import { AppError } from '../utils/AppError.js';
 import { env } from '../config/env.js';
 import { VEHICLES, vehicleByType, MATCHING } from '../config/pricing.js';
 import { FARE_ASSUMPTIONS } from './fare.service.js';
+import { cancelOpenPayments } from './payment.service.js';
+import {
+  notifyBookingCancelled,
+  notifyLeftSharedRide,
+  notifyPoolJoined,
+  notifyPoolLeft,
+  quietly,
+} from './notification.service.js';
 import {
   VERIFIED_STATUSES,
   describeTrip,
@@ -31,6 +39,9 @@ function isExpired(trip) {
 }
 
 function assertCanChooseRide(trip) {
+  if (trip.booking?.status === 'confirmed') {
+    throw new AppError(409, 'BOOKING_CONFIRMED', 'This ride is booked, so it can no longer be changed.');
+  }
   if (trip.status === 'cancelled') {
     throw new AppError(409, 'TRIP_CANCELLED', 'This trip was cancelled. Plan a new trip to continue.');
   }
@@ -118,6 +129,7 @@ function publicPool(pool, me, { joining }) {
       soloFare: solo?.total ?? null,
       savingsPerPerson: solo ? Math.max(0, Math.round((solo.total - yourShare) / me.partySize)) : null,
       roadKm: estimate.roadKm,
+      breakdown: estimate.breakdown, // base fare + distance charge (fare.service.js)
     },
   };
 }
@@ -256,6 +268,9 @@ async function leavePool(trip, session) {
   const pool = await Pool.findById(trip.poolId).session(session);
   trip.poolId = null;
   if (!pool || pool.status === 'cancelled') return;
+  if (pool.status === 'completed') {
+    throw new AppError(409, 'RIDE_COMPLETED', 'This ride has already been completed, so it can’t be changed.');
+  }
   if (pool.status !== 'open') {
     throw new AppError(409, 'POOL_CONFIRMED', 'Your shared ride is already confirmed, so it can’t be changed here.');
   }
@@ -283,12 +298,14 @@ const POOL_REFUSALS = {
 // Sending the same choice again changes nothing.
 export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) {
   const vehicle = vehicleByType(vehicleType);
+  let previous = null; // the shared ride before this change, for notifications
 
   try {
-    return await mongoose.connection.transaction(async (session) => {
+    const saved = await mongoose.connection.transaction(async (session) => {
       const trip = await loadOwnTrip(tripId, userId, session);
       assertCanChooseRide(trip);
       const me = describeTrip(trip);
+      previous = { poolId: trip.poolId ? String(trip.poolId) : null, leaver: leaverFacts(trip, me) };
 
       if (!fitsVehicle(vehicle, [me])) {
         throw new AppError(
@@ -364,6 +381,8 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
       await trip.save({ session });
       return trip;
     });
+    await notifyRideChange(previous, saved);
+    return saved;
   } catch (err) {
     // Two identical requests raced to create a pool for the same trip:
     // the unique index let only one through - return that result
@@ -375,10 +394,15 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
   }
 }
 
-// Cancelling a trip also takes it out of its (open) shared ride
-export async function cancelTrip(tripId, userId) {
-  return mongoose.connection.transaction(async (session) => {
+// Cancelling a trip also takes it out of its (open) shared ride, and
+// cancels its booking (kept, with the optional reason)
+export async function cancelTrip(tripId, userId, { reason } = {}) {
+  let previous = null;
+  let wasBooked = false;
+  const cancelled = await mongoose.connection.transaction(async (session) => {
     const trip = await loadOwnTrip(tripId, userId, session);
+    previous = { poolId: trip.poolId ? String(trip.poolId) : null, leaver: leaverFacts(trip, describeTrip(trip)) };
+    wasBooked = trip.booking?.status === 'confirmed';
     if (trip.status === 'cancelled') {
       throw new AppError(409, 'TRIP_CANCELLED', 'This trip was cancelled. Plan a new trip to continue.');
     }
@@ -388,8 +412,83 @@ export async function cancelTrip(tripId, userId) {
     await leavePool(trip, session);
     trip.status = 'cancelled';
     trip.cancelledAt = new Date();
+    if (trip.booking?.status === 'confirmed') {
+      trip.booking.status = 'cancelled';
+      trip.booking.cancelledAt = trip.cancelledAt;
+      if (reason) trip.booking.cancelReason = reason;
+    }
+    // Unfinished payments for this booking are cancelled (paid ones are kept)
+    if (trip.booking) await cancelOpenPayments(trip._id, trip.booking.reference, 'booking_cancelled', session);
     await trip.save({ session });
     return trip;
   });
+  // Tell the others in the shared ride, and the passenger about their booking
+  if (previous.poolId) await quietly('pool_left', () => notifyPoolLeft(previous.poolId, previous.leaver));
+  if (wasBooked) await quietly('booking_cancelled', () => notifyBookingCancelled(cancelled));
+  return cancelled;
 }
 
+// ---- notifications after a change (never fail the change itself) ---------------
+
+// What others are told about someone who left: area and group size only
+function leaverFacts(trip, me) {
+  return { tripId: String(trip._id), area: me.area?.name ?? null, partySize: me.partySize };
+}
+
+async function notifyRideChange(previous, trip) {
+  const now = trip.poolId ? String(trip.poolId) : null;
+  if (previous?.poolId && previous.poolId !== now) {
+    await quietly('pool_left', () => notifyPoolLeft(previous.poolId, previous.leaver));
+  }
+  if (now && now !== previous?.poolId) {
+    await quietly('pool_joined', () => notifyPoolJoined(now, trip._id));
+  }
+}
+
+
+// Leave Pool: a passenger with a confirmed booking in a shared ride leaves
+// it. Different from cancelling: the TRIP goes on (back to choosing a ride -
+// travel alone or another shared ride), only the booking for this shared
+// ride ends. It is kept in trip.pastBookings with status "left_pool".
+// The shared ride's seats and fare estimate are updated (leavePool), the
+// others are told, and the group chat closes for this passenger (chat needs
+// a confirmed booking in the ride).
+export async function leaveSharedRide(tripId, userId) {
+  let left = null;
+  const updated = await mongoose.connection.transaction(async (session) => {
+    const trip = await loadOwnTrip(tripId, userId, session);
+    if (trip.status === 'cancelled') {
+      throw new AppError(409, 'TRIP_CANCELLED', 'This trip was cancelled. Plan a new trip to continue.');
+    }
+    const booking = trip.booking;
+    if (!booking || booking.status !== 'confirmed') {
+      throw new AppError(409, 'NO_ACTIVE_BOOKING', 'This trip has no confirmed booking.');
+    }
+    if (booking.mode !== 'shared' || !trip.poolId) {
+      throw new AppError(409, 'NOT_IN_POOL', 'You’re not in a shared ride, so there is nothing to leave.');
+    }
+    if (new Date(trip.arrivalAt).getTime() < Date.now()) {
+      throw new AppError(409, 'TRIP_IN_PAST', 'This trip has already happened, so its shared ride can’t be left.');
+    }
+    const me = describeTrip(trip);
+    left = { poolId: String(trip.poolId), leaver: leaverFacts(trip, me), reference: booking.reference };
+    await leavePool(trip, session); // checks the shared ride is still open
+    await cancelOpenPayments(trip._id, booking.reference, 'left_shared_ride', session);
+
+    const ended = booking.toObject();
+    ended.status = 'left_pool';
+    ended.endedAt = new Date();
+    trip.pastBookings.push(ended);
+    trip.booking = null;
+    trip.rideMode = null;
+    trip.vehicleType = null;
+    trip.soloFareEstimate = null;
+    trip.rideSelectedAt = undefined;
+    trip.status = 'flight_verified'; // choose a ride again
+    await trip.save({ session });
+    return trip;
+  });
+  await quietly('pool_left', () => notifyPoolLeft(left.poolId, left.leaver));
+  await quietly('booking_updated', () => notifyLeftSharedRide(updated, left.reference));
+  return updated;
+}

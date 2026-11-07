@@ -17,6 +17,8 @@ Object.assign(process.env, {
   VERIFICATION_TIMEOUT_MS: '300',
   TRUST_PROXY: '1', // each test user gets its own X-Forwarded-For "IP"
   LOG_REQUESTS: 'false',
+  PAYMENT_MODE: 'demo',
+  PAYMENT_WEBHOOK_SECRET: 'integration-webhook-secret',
 });
 
 const { default: mongoose } = await import('mongoose');
@@ -28,13 +30,19 @@ const { Trip } = await import('../../src/models/Trip.js');
 const { Pool } = await import('../../src/models/Pool.js');
 const { User } = await import('../../src/models/User.js');
 const { RevokedToken } = await import('../../src/models/RevokedToken.js');
+const { Notification } = await import('../../src/models/Notification.js');
+const { DeviceToken } = await import('../../src/models/DeviceToken.js');
+const { ChatMessage } = await import('../../src/models/ChatMessage.js');
+const { setPushTransport } = await import('../../src/services/push.service.js');
+const { Payment } = await import('../../src/models/Payment.js');
+const { PaymentEvent } = await import('../../src/models/PaymentEvent.js');
 
 let server;
 let base;
 
 before(async () => {
   await mongoose.connect(process.env.MONGODB_URI);
-  await Promise.all([User.init(), Trip.init(), Pool.init(), RevokedToken.init()]); // build unique indexes first
+  await Promise.all([User.init(), Trip.init(), Pool.init(), RevokedToken.init(), Notification.init(), DeviceToken.init(), ChatMessage.init(), Payment.init(), PaymentEvent.init()]); // build unique indexes first
   server = app.listen(0);
   base = `http://127.0.0.1:${server.address().port}/api`;
 });
@@ -615,6 +623,568 @@ test('cancelling leaves the pool; confirmed pools and past trips cannot be chang
   assert.equal((await past.api('PATCH', `/trips/${past.id}`, { status: 'cancelled' })).error.code, 'TRIP_IN_PAST');
 });
 
+// ---- 12b. booking confirmation ----------------------------------------------------
+test('booking: validated, saved with a server reference, safe to repeat, locks the ride, cancelled with the trip', async () => {
+  const date = '2026-12-28';
+  const book = (p, body = {}) => p.api('POST', `/trips/${p.id}/booking`, body);
+
+  // Not verified / no ride chosen yet
+  const unverified = await passenger({ travelDate: date, destination: 'Powai', verify: false });
+  assert.equal((await book(unverified)).error.code, 'FLIGHT_NOT_VERIFIED');
+  const S = await passenger({ travelDate: date, destination: 'Powai', expectedArrivalTime: '11:00' });
+  assert.equal((await book(S)).error.code, 'RIDE_NOT_SELECTED');
+
+  // Solo SUV
+  const chosen = (await choose(S, { mode: 'solo', vehicleType: 'suv' })).data;
+  const share = chosen.ride.soloFare.total;
+  assert.ok(chosen.ride.soloFare.breakdown.baseFare > 0); // the estimate explains itself
+  // What the passenger reviewed no longer matches -> review again, nothing saved
+  assert.equal((await book(S, { mode: 'solo', vehicleType: 'sedan' })).error.code, 'BOOKING_REVIEW_CHANGED');
+  assert.equal((await book(S, { mode: 'solo', vehicleType: 'suv', poolId: null, yourShare: share + 10 })).error.code, 'BOOKING_REVIEW_CHANGED');
+  assert.equal((await Trip.findById(S.id)).booking, null);
+  // Unknown fields are refused
+  assert.equal((await book(S, { status: 'confirmed' })).error.code, 'VALIDATION_ERROR');
+
+  // Two confirmations at the same moment -> ONE booking
+  const reviewed = { mode: 'solo', vehicleType: 'suv', poolId: null, yourShare: share };
+  const [a, b] = await Promise.all([book(S, reviewed), book(S, reviewed)]);
+  assert.deepEqual([a.status, b.status].sort(), [200, 201]);
+  assert.equal(a.data.booking.reference, b.data.booking.reference);
+  assert.match(a.data.booking.reference, /^FP-[A-HJ-NP-Z2-9]{8}$/);
+  const saved = await Trip.findById(S.id);
+  assert.equal(saved.booking.reference, a.data.booking.reference);
+  assert.equal(saved.booking.status, 'confirmed');
+  assert.equal(saved.booking.mode, 'solo');
+  assert.equal(saved.booking.fare.total, share);
+  assert.deepEqual(saved.booking.travellers, []);
+  // Later repeats return the same booking; the ride can no longer change
+  const again = await book(S);
+  assert.equal(again.status, 200);
+  assert.equal(again.data.booking.reference, saved.booking.reference);
+  assert.equal((await choose(S, { mode: 'solo', vehicleType: 'sedan' })).error.code, 'BOOKING_CONFIRMED');
+  // My Trips sees it; nobody else can book this trip
+  const listed = (await S.api('GET', '/trips')).data.trips.find((t) => t.id === S.id);
+  assert.equal(listed.booking.reference, saved.booking.reference);
+  const stranger = await newUser();
+  assert.equal((await stranger.api('POST', `/trips/${S.id}/booking`, {})).error.code, 'TRIP_NOT_FOUND');
+
+  // Shared: nobody joined yet -> can't book; once someone joins -> booked with them
+  const P = await passenger({ travelDate: date, destination: 'Bandra West', expectedArrivalTime: '12:00' });
+  const Q = await passenger({ travelDate: date, destination: 'Bandra West', expectedArrivalTime: '12:05' });
+  const poolId = (await choose(P, { mode: 'shared', vehicleType: 'sedan' })).data.trip.poolId;
+  assert.equal((await book(P)).error.code, 'POOL_NO_TRAVELLERS');
+  await choose(Q, { mode: 'shared', vehicleType: 'sedan', poolId });
+  const shared = await book(P, { mode: 'shared', vehicleType: 'sedan', poolId });
+  assert.equal(shared.status, 201);
+  assert.equal(shared.data.booking.poolId, poolId);
+  assert.equal(shared.data.booking.travellers.length, 1);
+  assert.equal(shared.data.booking.travellers[0].area, 'Bandra West');
+  assert.equal(shared.data.booking.fare.people, 2);
+  assert.equal((await Pool.findById(poolId)).status, 'open'); // others can still join or leave
+
+  // Cancelling the trip cancels its booking (and leaves the shared ride)
+  const cancelled = await P.api('PATCH', `/trips/${P.id}`, { status: 'cancelled' });
+  assert.equal(cancelled.data.trip.booking.status, 'cancelled');
+  assert.equal((await Pool.findById(poolId)).members.length, 1);
+  assert.equal((await book(P)).error.code, 'TRIP_CANCELLED');
+});
+
+// ---- 12c. notifications ---------------------------------------------------------------
+test('notifications: real events reach only the users concerned; read, read all; push only to their phones', async () => {
+  const date = '2026-12-29';
+  const pushed = [];
+  setPushTransport(async (messages) => {
+    pushed.push(...messages);
+    // Expo says one of the phones no longer has the app
+    return messages.map((m) => (m.to === 'ExponentPushToken[gone-phone-token]' ? { status: 'error', details: { error: 'DeviceNotRegistered' } } : { status: 'ok' }));
+  });
+  try {
+    const list = async (p) => (await p.api('GET', '/notifications')).data;
+    const types = async (p) => (await list(p)).notifications.map((n) => n.type);
+
+    const A = await passenger({ travelDate: date, destination: 'Powai', expectedArrivalTime: '13:00' });
+    // A's phone, and B's two phones (one of them later reported gone)
+    assert.equal((await A.api('POST', '/notifications/device-token', { token: 'ExponentPushToken[aaaa-phone-1]', platform: 'android' })).status, 200);
+    const outsider = await passenger({ travelDate: '2026-12-30', destination: 'Powai', expectedArrivalTime: '13:00' });
+    assert.deepEqual(await types(outsider), ['system']); // only the welcome
+
+    // B verifies a compatible trip -> A hears about it, B and the outsider don't
+    const B = await newUser();
+    await B.api('POST', '/notifications/device-token', { token: 'ExponentPushToken[bbbb-phone-1]', platform: 'ios' });
+    await B.api('POST', '/notifications/device-token', { token: 'ExponentPushToken[gone-phone-token]', platform: 'ios' });
+    const b = await passenger({ user: B, travelDate: date, destination: 'Hiranandani Gardens, Powai', expectedArrivalTime: '13:10' });
+    const aFirst = await list(A);
+    assert.equal(aFirst.notifications[0].type, 'compatible_traveller');
+    assert.equal(aFirst.notifications[0].tripId, A.id); // opens A's own trip
+    assert.match(aFirst.notifications[0].message, /heading to Powai/);
+    assert.doesNotMatch(aFirst.notifications[0].message, /Test User|@test/); // no names or emails
+    assert.deepEqual(await types(b), ['system']);
+    assert.deepEqual(await types(outsider), ['system']);
+
+    // A starts a shared ride, B joins -> A is told; B books -> only B is told
+    const poolId = (await choose(A, { mode: 'shared', vehicleType: 'sedan' })).data.trip.poolId;
+    await choose(b, { mode: 'shared', vehicleType: 'sedan', poolId });
+    assert.equal((await list(A)).notifications[0].type, 'pool_joined');
+    assert.equal((await list(A)).notifications[0].poolId, poolId);
+    const booked = (await b.api('POST', `/trips/${b.id}/booking`, {})).data.booking;
+    const bList = await list(b);
+    assert.equal(bList.notifications[0].type, 'booking_confirmed');
+    assert.equal(bList.notifications[0].bookingReference, booked.reference);
+    assert.ok(!(await types(A)).includes('booking_confirmed'));
+
+    // A leaves the shared ride -> B (still in it) is told
+    await choose(A, { mode: 'solo', vehicleType: 'sedan' });
+    assert.equal((await list(b)).notifications[0].type, 'pool_left');
+    // The same event never notifies twice
+    assert.equal((await Notification.countDocuments({ userId: B.userId, type: 'booking_confirmed' })), 1);
+
+    // Newest first, unread counted; read one, then all
+    const before = await list(b);
+    const times = before.notifications.map((n) => Date.parse(n.createdAt));
+    assert.deepEqual(times, [...times].sort((x, y) => y - x));
+    assert.equal(before.unreadCount, before.notifications.length);
+    const first = before.notifications[0];
+    const read = await b.api('PATCH', `/notifications/${first.id}/read`);
+    assert.equal(read.data.notification.read, true);
+    assert.equal((await list(b)).unreadCount, before.unreadCount - 1);
+    // Someone else's notification, or a made-up id: not found
+    assert.equal((await A.api('PATCH', `/notifications/${first.id}/read`)).error.code, 'NOTIFICATION_NOT_FOUND');
+    assert.equal((await A.api('PATCH', '/notifications/not-an-id/read')).error.code, 'NOTIFICATION_NOT_FOUND');
+    assert.equal((await b.api('PATCH', '/notifications/read-all')).data.updated, before.unreadCount - 1);
+    assert.equal((await list(b)).unreadCount, 0);
+    assert.equal((await client('10.99.0.1')('GET', '/notifications')).status, 401);
+
+    // Push: each notification only to its own user's phones; the dead token is removed
+    const tokensOf = (who) => new Set(pushed.filter((m) => m.title && who.includes(m.to)).map((m) => m.to));
+    const aTokens = ['ExponentPushToken[aaaa-phone-1]'];
+    const bTokens = ['ExponentPushToken[bbbb-phone-1]', 'ExponentPushToken[gone-phone-token]'];
+    for (const m of pushed) {
+      const forA = m.title === 'New compatible traveller' || m.title === 'A traveller joined your shared ride';
+      const forB = m.title === 'Booking confirmed' || m.title === 'A traveller left your shared ride';
+      if (forA) assert.ok(aTokens.includes(m.to), 'A’s notification went to someone else');
+      if (forB) assert.ok(bTokens.includes(m.to), 'B’s notification went to someone else');
+      assert.equal(JSON.stringify(m).includes('eyJ'), false); // no login token in a push
+    }
+    assert.ok(tokensOf(aTokens).size === 1 && tokensOf(bTokens).size >= 1);
+    assert.equal(await DeviceToken.countDocuments({ token: 'ExponentPushToken[gone-phone-token]' }), 0);
+
+    // Device tokens: no duplicates; a phone that changes hands moves to the new user; logout removes it
+    await A.api('POST', '/notifications/device-token', { token: 'ExponentPushToken[aaaa-phone-1]', platform: 'android' });
+    assert.equal(await DeviceToken.countDocuments({ token: 'ExponentPushToken[aaaa-phone-1]' }), 1);
+    await B.api('POST', '/notifications/device-token', { token: 'ExponentPushToken[aaaa-phone-1]', platform: 'android' });
+    assert.equal(String((await DeviceToken.findOne({ token: 'ExponentPushToken[aaaa-phone-1]' })).userId), B.userId);
+    assert.equal((await A.api('DELETE', '/notifications/device-token', { token: 'ExponentPushToken[aaaa-phone-1]' })).data.removed, 0); // not A's any more
+    assert.equal((await B.api('DELETE', '/notifications/device-token', { token: 'ExponentPushToken[aaaa-phone-1]' })).data.removed, 1);
+    assert.equal((await B.api('POST', '/notifications/device-token', { token: 'my-jwt', platform: 'ios' })).error.code, 'VALIDATION_ERROR');
+  } finally {
+    setPushTransport(null);
+  }
+});
+
+// ---- 12d. group chat -------------------------------------------------------------------
+test('group chat: only passengers with a confirmed booking in that shared ride; no duplicates; polling', async () => {
+  const date = '2026-12-31';
+  const P = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '14:00' });
+  const Q = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '14:05' });
+  const outsider = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '14:10' });
+  const poolId = (await choose(P, { mode: 'shared', vehicleType: 'suv' })).data.trip.poolId;
+  await choose(Q, { mode: 'shared', vehicleType: 'suv', poolId });
+  const messages = (p, query = '') => p.api('GET', `/pools/${poolId}/messages${query}`);
+  const send = (p, text, clientMessageId = crypto.randomUUID()) => p.api('POST', `/pools/${poolId}/messages`, { text, clientMessageId });
+
+  // In the shared ride but not booked yet: no chat
+  assert.equal((await messages(P)).error.code, 'CHAT_NOT_FOUND');
+  await P.api('POST', `/trips/${P.id}/booking`, {});
+  await Q.api('POST', `/trips/${Q.id}/booking`, {});
+
+  // Members: first name + initial only
+  const opened = (await messages(P)).data;
+  assert.equal(opened.messages.length, 0);
+  assert.equal(opened.conversation.members.length, 2);
+  for (const m of opened.conversation.members) {
+    assert.match(m.name, /^Test \d+\.$|^Test [A-Z]\.$/);
+    assert.equal(JSON.stringify(m).includes('@'), false);
+  }
+  assert.equal(opened.conversation.members.filter((m) => m.isYou).length, 1);
+
+  // P sends; sending the same message again doesn't duplicate it
+  const id = crypto.randomUUID();
+  const first = await send(P, '  Landing at 2 - <b>meet at exit 3?</b>  ', id);
+  assert.equal(first.status, 201);
+  assert.equal(first.data.message.text, 'Landing at 2 - <b>meet at exit 3?</b>'); // trimmed, kept as plain text
+  const again = await send(P, 'Landing at 2 - <b>meet at exit 3?</b>', id);
+  assert.equal(again.status, 200);
+  assert.equal(again.data.message.id, first.data.message.id);
+  assert.equal(await ChatMessage.countDocuments({ poolId }), 1);
+
+  // Q sees it - from P, not "you"
+  const qView = (await messages(Q)).data.messages;
+  assert.equal(qView.length, 1);
+  assert.equal(qView[0].sender.isYou, false);
+  assert.equal(qView[0].clientMessageId, undefined); // only the sender gets their own id back
+  assert.equal((await messages(P)).data.messages[0].sender.isYou, true);
+
+  // Polling: messages since a moment (with a small overlap the app de-duplicates)
+  const since = (await messages(Q)).data.serverTime;
+  await send(Q, 'See you there');
+  const polled = (await messages(P, `?since=${encodeURIComponent(since)}`)).data.messages;
+  assert.ok(polled.some((m) => m.text === 'See you there'));
+  assert.ok(polled.every((m, i, all) => i === 0 || Date.parse(all[i - 1].createdAt) <= Date.parse(m.createdAt)));
+
+  // Validation
+  assert.equal((await send(P, '   ')).error.code, 'VALIDATION_ERROR');
+  assert.equal((await send(P, 'x'.repeat(1001))).error.code, 'VALIDATION_ERROR');
+  assert.equal((await P.api('POST', `/pools/${poolId}/messages`, { text: 'hi' })).error.code, 'VALIDATION_ERROR');
+
+  // Outsiders: someone not in the ride, a solo booking, a made-up id - all "not found"
+  assert.equal((await messages(outsider)).error.code, 'CHAT_NOT_FOUND');
+  assert.equal((await send(outsider, 'let me in')).error.code, 'CHAT_NOT_FOUND');
+  await choose(outsider, { mode: 'solo', vehicleType: 'sedan' });
+  await outsider.api('POST', `/trips/${outsider.id}/booking`, {});
+  assert.equal((await messages(outsider)).error.code, 'CHAT_NOT_FOUND');
+  assert.equal((await P.api('GET', '/pools/000000000000000000000000/messages')).error.code, 'CHAT_NOT_FOUND');
+  assert.equal((await P.api('GET', '/pools/not-an-id/messages')).error.code, 'CHAT_NOT_FOUND');
+  assert.equal((await client('10.99.0.2')('GET', `/pools/${poolId}/messages`)).status, 401);
+
+  // Cancelling the trip ends access; the other member keeps the conversation
+  await Q.api('PATCH', `/trips/${Q.id}`, { status: 'cancelled' });
+  assert.equal((await messages(Q)).error.code, 'CHAT_NOT_FOUND');
+  assert.equal((await messages(P)).data.messages.length, 2);
+});
+
+// ---- 12e. ride management: cancel booking, leave a shared ride -------------------------
+test('ride management: cancel (once, with reason, kept), refused when landed/completed/not theirs', async () => {
+  const date = '2027-01-02';
+  const manage = (p) => p.api('GET', `/trips/${p.id}/booking`);
+  const cancel = (p, body = {}) => p.api('POST', `/trips/${p.id}/booking/cancel`, body);
+
+  // A confirmed solo booking: what Ride Management sees
+  const S = await passenger({ travelDate: date, destination: 'Powai', expectedArrivalTime: '15:00' });
+  await choose(S, { mode: 'solo', vehicleType: 'sedan' });
+  assert.equal((await cancel(S)).error.code, 'NO_ACTIVE_BOOKING'); // nothing booked yet
+  const reference = (await S.api('POST', `/trips/${S.id}/booking`, {})).data.booking.reference;
+  const view = (await manage(S)).data;
+  assert.deepEqual(view.status, { code: 'confirmed', label: 'Booking confirmed' });
+  assert.deepEqual(view.timeline.map((e) => e.key), ['planned', 'verified', 'ride', 'booked']);
+  assert.equal(view.actions.cancel.allowed, true);
+  assert.deepEqual(view.actions.leavePool, { allowed: false, reason: 'Solo rides have no shared ride to leave.' });
+  assert.equal((await S.api('POST', `/trips/${S.id}/booking/leave-pool`, {})).error.code, 'NOT_IN_POOL');
+
+  // Someone else can't cancel it (or see it)
+  const stranger = await newUser();
+  assert.equal((await stranger.api('POST', `/trips/${S.id}/booking/cancel`, {})).error.code, 'TRIP_NOT_FOUND');
+  assert.equal((await stranger.api('GET', `/trips/${S.id}/booking`)).error.code, 'TRIP_NOT_FOUND');
+
+  // Two cancellations at the same moment: one succeeds, the other is told it's already cancelled
+  const [a, b] = await Promise.all([cancel(S, { reason: 'Plans changed' }), cancel(S, { reason: 'Plans changed' })]);
+  assert.deepEqual([a.status, b.status].sort(), [200, 409]);
+  assert.equal((a.status === 409 ? a : b).error.code, 'BOOKING_ALREADY_CANCELLED');
+  // Kept, not deleted - with its reason and history
+  const saved = await Trip.findById(S.id);
+  assert.equal(saved.status, 'cancelled');
+  assert.equal(saved.booking.status, 'cancelled');
+  assert.equal(saved.booking.reference, reference);
+  assert.equal(saved.booking.cancelReason, 'Plans changed');
+  const after = (await manage(S)).data;
+  assert.equal(after.status.code, 'cancelled');
+  assert.equal(after.timeline.at(-1).key, 'cancelled');
+  assert.equal(after.actions.cancel.allowed, false);
+  assert.equal((await cancel(S)).error.code, 'BOOKING_ALREADY_CANCELLED');
+  assert.ok((await S.api('GET', '/trips')).data.trips.some((t) => t.id === S.id && t.status === 'cancelled'));
+  assert.equal((await Notification.countDocuments({ userId: S.userId, type: 'booking_cancelled' })), 1);
+
+  // Landed: can't be cancelled any more
+  const L = await passenger({ travelDate: date, destination: 'Powai', expectedArrivalTime: '15:20' });
+  await choose(L, { mode: 'solo', vehicleType: 'sedan' });
+  await L.api('POST', `/trips/${L.id}/booking`, {});
+  await Trip.updateOne({ _id: L.id }, { $set: { arrivalAt: new Date(Date.now() - 30 * 60 * 1000) } });
+  assert.equal((await manage(L)).data.status.code, 'arrived');
+  assert.equal((await manage(L)).data.actions.cancel.allowed, false);
+  assert.equal((await cancel(L)).error.code, 'TRIP_IN_PAST');
+
+  // A completed ride (status reserved for a future dispatch feature) can't be cancelled or left
+  const P = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '16:00' });
+  const Q = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '16:05' });
+  const poolId = (await choose(P, { mode: 'shared', vehicleType: 'sedan' })).data.trip.poolId;
+  await choose(Q, { mode: 'shared', vehicleType: 'sedan', poolId });
+  await P.api('POST', `/trips/${P.id}/booking`, {});
+  await Pool.updateOne({ _id: poolId }, { $set: { status: 'completed' } });
+  assert.equal((await manage(P)).data.actions.cancel.reason, 'This ride has already been completed.');
+  assert.equal((await cancel(P)).error.code, 'RIDE_COMPLETED');
+  assert.equal((await P.api('POST', `/trips/${P.id}/booking/leave-pool`, {})).error.code, 'RIDE_COMPLETED');
+  assert.equal((await Trip.findById(P.id)).booking.status, 'confirmed'); // untouched
+  await Pool.updateOne({ _id: poolId }, { $set: { status: 'open' } }); // tidy up for later checks
+});
+
+test('leave pool: the trip goes on, the shared ride and its chat update, history is kept, others are told', async () => {
+  const date = '2027-01-03';
+  const P = await passenger({ travelDate: date, destination: 'Andheri West', expectedArrivalTime: '09:00' });
+  const Q = await passenger({ travelDate: date, destination: 'Andheri West', expectedArrivalTime: '09:05' });
+  const R = await passenger({ travelDate: date, destination: 'Andheri West', expectedArrivalTime: '09:10' });
+  const poolId = (await choose(P, { mode: 'shared', vehicleType: 'suv' })).data.trip.poolId;
+  await choose(Q, { mode: 'shared', vehicleType: 'suv', poolId });
+  await choose(R, { mode: 'shared', vehicleType: 'suv', poolId });
+  const reference = (await P.api('POST', `/trips/${P.id}/booking`, {})).data.booking.reference;
+  await Q.api('POST', `/trips/${Q.id}/booking`, {});
+  await P.api('POST', `/pools/${poolId}/messages`, { text: 'Hi both', clientMessageId: crypto.randomUUID() });
+  const fareBefore = (await Q.api('GET', `/trips/${Q.id}/booking`)).data.ride.pool.fare.total;
+  assert.equal((await Q.api('GET', `/trips/${Q.id}/booking`)).data.ride.pool.others.length, 2);
+
+  // Someone outside can't make P leave
+  const stranger = await newUser();
+  assert.equal((await stranger.api('POST', `/trips/${P.id}/booking/leave-pool`, {})).error.code, 'TRIP_NOT_FOUND');
+
+  const left = await P.api('POST', `/trips/${P.id}/booking/leave-pool`, {});
+  assert.equal(left.status, 200);
+  // P's trip continues: back to choosing a ride; the ended booking is kept
+  assert.equal(left.data.trip.status, 'flight_verified');
+  assert.equal(left.data.booking, null);
+  assert.equal(left.data.pastBookings.length, 1);
+  assert.equal(left.data.pastBookings[0].reference, reference);
+  assert.equal(left.data.pastBookings[0].status, 'left_pool');
+  assert.ok(left.data.timeline.some((e) => e.key === 'left_pool'));
+  assert.equal(left.data.status.code, 'not_booked');
+  // The shared ride: P removed, seats and fare estimate updated for those left
+  const pool = await Pool.findById(poolId);
+  assert.deepEqual(pool.members.map((m) => String(m.tripId)).sort(), [Q.id, R.id].sort());
+  const qView = (await Q.api('GET', `/trips/${Q.id}/booking`)).data;
+  assert.equal(qView.ride.pool.others.length, 1);
+  assert.equal(qView.ride.pool.fare.people, 2); // re-estimated for Q and R only (was 3)
+  assert.ok(Number.isFinite(fareBefore));
+  // Q and R are told; P gets their own update; nobody else
+  for (const other of [Q, R]) {
+    const latest = (await other.api('GET', '/notifications')).data.notifications[0];
+    assert.equal(latest.type, 'pool_left');
+  }
+  assert.equal((await P.api('GET', '/notifications')).data.notifications[0].type, 'booking_updated');
+  assert.equal(await Notification.countDocuments({ userId: stranger.userId, type: { $ne: 'system' } }), 0);
+  // Chat: P can no longer read or write; Q keeps the history, including P's message
+  assert.equal((await P.api('GET', `/pools/${poolId}/messages`)).error.code, 'CHAT_NOT_FOUND');
+  assert.equal((await P.api('POST', `/pools/${poolId}/messages`, { text: 'still here?', clientMessageId: crypto.randomUUID() })).error.code, 'CHAT_NOT_FOUND');
+  assert.deepEqual((await Q.api('GET', `/pools/${poolId}/messages`)).data.messages.map((m) => m.text), ['Hi both']);
+  // Leaving again: nothing to leave
+  assert.equal((await P.api('POST', `/trips/${P.id}/booking/leave-pool`, {})).error.code, 'NO_ACTIVE_BOOKING');
+
+  // P can book again for the same trip - a new reference, the old one kept
+  await choose(P, { mode: 'solo', vehicleType: 'sedan' });
+  const rebooked = (await P.api('POST', `/trips/${P.id}/booking`, {})).data.booking;
+  assert.notEqual(rebooked.reference, reference);
+  const pTrip = await Trip.findById(P.id);
+  assert.equal(pTrip.pastBookings[0].reference, reference);
+  assert.equal(pTrip.booking.reference, rebooked.reference);
+});
+
+// ---- 12f. payments (demo mode) --------------------------------------------------------
+const payView = (p) => p.api('GET', `/trips/${p.id}/payment`);
+const startPay = (p, body = {}) => p.api('POST', `/trips/${p.id}/payment`, body);
+const demoResult = (p, paymentId, outcome) => p.api('POST', `/payments/${paymentId}/demo-result`, { outcome });
+async function bookedSolo(date, time, destination = 'Powai') {
+  const p = await passenger({ travelDate: date, destination, expectedArrivalTime: time });
+  await choose(p, { mode: 'solo', vehicleType: 'sedan' });
+  await p.api('POST', `/trips/${p.id}/booking`, {});
+  return p;
+}
+// A signed provider webhook (Razorpay format), as the provider would send it
+async function webhook(body, { eventId = crypto.randomUUID(), secret = 'integration-webhook-secret', signature } = {}) {
+  const raw = JSON.stringify(body);
+  const sig = signature ?? crypto.createHmac('sha256', secret).update(raw).digest('hex');
+  const res = await fetch(`${base}/payments/webhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Razorpay-Signature': sig, 'X-Razorpay-Event-Id': eventId },
+    body: raw,
+  });
+  return { status: res.status, ...(await res.json()) };
+}
+const paymentEvent = (event, orderId, amountPaise, extra = {}) => ({
+  entity: 'event',
+  event,
+  payload: { payment: { entity: { id: `pay_${crypto.randomBytes(6).toString('hex')}`, order_id: orderId, amount: amountPaise, currency: 'INR', ...extra } } },
+});
+
+test('payments: solo amount from the server, idempotent start, demo success/failure/cancel, no double payment, owner only', async () => {
+  const date = '2027-01-04';
+  const S = await bookedSolo(date, '10:00');
+  const view = (await payView(S)).data;
+  const ride = (await S.api('GET', `/trips/${S.id}/ride`)).data.ride;
+  assert.equal(view.demo, true);
+  assert.equal(view.amount, ride.soloFare.total); // the whole cab for a solo ride
+  assert.equal(view.fare.share, view.fare.total);
+  assert.equal(view.canPay, true);
+  assert.equal(view.payment, null);
+  // The app can't send an amount
+  assert.equal((await startPay(S, { amount: 1 })).error.code, 'VALIDATION_ERROR');
+
+  const first = await startPay(S);
+  assert.equal(first.status, 201);
+  assert.equal(first.data.payment.status, 'pending');
+  assert.equal(first.data.payment.amount, view.amount);
+  assert.equal(first.data.payment.mode, 'demo');
+  const again = await startPay(S);
+  assert.equal(again.status, 200);
+  assert.equal(again.data.payment.id, first.data.payment.id); // the same open payment
+
+  // Someone else: can't see, can't complete
+  const stranger = await newUser();
+  assert.equal((await stranger.api('GET', `/trips/${S.id}/payment`)).error.code, 'TRIP_NOT_FOUND');
+  assert.equal((await demoResult(stranger, first.data.payment.id, 'success')).error.code, 'PAYMENT_NOT_FOUND');
+  assert.deepEqual((await stranger.api('GET', '/payments')).data.payments, []);
+
+  const paid = await demoResult(S, first.data.payment.id, 'success');
+  assert.equal(paid.data.payment.status, 'paid');
+  assert.ok(paid.data.payment.providerPaymentId.startsWith('demo_pay_'));
+  // A late "failure" for the same payment changes nothing; it can't be paid twice
+  const late = await demoResult(S, first.data.payment.id, 'failure');
+  assert.equal(late.data.changed, false);
+  assert.equal(late.data.payment.status, 'paid');
+  assert.equal((await startPay(S)).error.code, 'ALREADY_PAID');
+  assert.equal(await Payment.countDocuments({ tripId: S.id, status: 'paid' }), 1);
+  const after = (await payView(S)).data;
+  assert.equal(after.canPay, false);
+  assert.equal(after.payment.status, 'paid');
+  const history = (await S.api('GET', '/payments')).data.payments;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].trip.destination, 'Powai');
+
+  // Two "start" requests at the same moment -> one payment
+  const T = await bookedSolo(date, '10:05');
+  const [x, y] = await Promise.all([startPay(T), startPay(T)]);
+  assert.equal(x.data.payment.id, y.data.payment.id);
+  assert.equal(await Payment.countDocuments({ tripId: T.id }), 1);
+
+  // Failure, then a new attempt; cancelling an attempt; then success
+  const failed = await demoResult(T, x.data.payment.id, 'failure');
+  assert.equal(failed.data.payment.status, 'failed');
+  const second = await startPay(T);
+  assert.equal(second.status, 201);
+  assert.notEqual(second.data.payment.id, x.data.payment.id);
+  assert.equal((await demoResult(T, second.data.payment.id, 'cancelled')).data.payment.status, 'cancelled');
+  const third = (await startPay(T)).data.payment;
+  assert.equal((await demoResult(T, third.id, 'success')).data.payment.status, 'paid');
+  assert.deepEqual(
+    (await Payment.find({ tripId: T.id }).sort({ createdAt: 1 })).map((p) => p.status),
+    ['failed', 'cancelled', 'paid'],
+  );
+
+  // Cancel the booking after starting a payment: the payment is cancelled, can't be completed
+  const C = await bookedSolo(date, '10:10');
+  const open = (await startPay(C)).data.payment;
+  await C.api('POST', `/trips/${C.id}/booking/cancel`, {});
+  const closed = await Payment.findById(open.id);
+  assert.equal(closed.status, 'cancelled');
+  assert.equal(closed.failureReason, 'booking_cancelled');
+  const tooLate = await demoResult(C, open.id, 'success');
+  assert.equal(tooLate.data.payment.status, 'cancelled');
+  assert.equal(tooLate.data.changed, false);
+  assert.equal((await startPay(C)).error.code, 'NO_ACTIVE_BOOKING');
+  // A paid booking that is then cancelled keeps its payment (no refund is processed)
+  await S.api('POST', `/trips/${S.id}/booking/cancel`, {});
+  const kept = await Payment.findById(first.data.payment.id);
+  assert.equal(kept.status, 'paid');
+  assert.equal(kept.needsRefund, false);
+  assert.equal((await S.api('GET', '/payments')).data.payments[0].status, 'paid');
+});
+
+test('payment webhooks: signature checked, each event applied once, amount must match, never backwards', async () => {
+  const W = await bookedSolo('2027-01-05', '11:00');
+  const payment = (await startPay(W)).data.payment;
+  const order = payment.providerOrderId;
+  const paise = payment.amount * 100;
+  const status = async () => (await Payment.findById(payment.id)).status;
+
+  // Bad or missing signatures are refused; nothing changes
+  const forged = await webhook(paymentEvent('payment.captured', order, paise), { secret: 'not-the-secret' });
+  assert.deepEqual([forged.status, forged.error.code], [400, 'INVALID_SIGNATURE']);
+  assert.equal((await webhook(paymentEvent('payment.captured', order, paise), { signature: 'abc' })).error.code, 'INVALID_SIGNATURE');
+  assert.equal(await status(), 'pending');
+
+  // Authorised -> processing; a capture for the wrong amount is ignored
+  assert.equal((await webhook(paymentEvent('payment.authorized', order, paise))).data.result, 'applied');
+  assert.equal(await status(), 'processing');
+  assert.equal((await webhook(paymentEvent('payment.captured', order, paise - 100))).data.result, 'ignored:amount_mismatch');
+  assert.equal(await status(), 'processing');
+
+  // Captured -> paid; the same event again is a duplicate; a later failure can't undo it
+  const eventId = crypto.randomUUID();
+  assert.equal((await webhook(paymentEvent('payment.captured', order, paise), { eventId })).data.result, 'applied');
+  assert.equal(await status(), 'paid');
+  assert.equal((await webhook(paymentEvent('payment.captured', order, paise), { eventId })).data.result, 'duplicate');
+  assert.equal((await webhook(paymentEvent('payment.failed', order, paise))).data.result, 'ignored:already_final');
+  assert.equal(await status(), 'paid');
+  assert.equal(await PaymentEvent.countDocuments({ eventId }), 1);
+
+  // Money captured for a booking that was cancelled meanwhile: recorded, flagged for a refund
+  const X = await bookedSolo('2027-01-05', '11:05');
+  const xPay = (await startPay(X)).data.payment;
+  await X.api('POST', `/trips/${X.id}/booking/cancel`, {});
+  assert.equal((await webhook(paymentEvent('payment.captured', xPay.providerOrderId, xPay.amount * 100))).data.result, 'applied');
+  const captured = await Payment.findById(xPay.id);
+  assert.equal(captured.status, 'paid');
+  assert.equal(captured.needsRefund, true);
+  // Unknown orders are ignored
+  assert.equal((await webhook(paymentEvent('payment.captured', 'order_unknown', 100))).data.result, 'ignored:unknown_order');
+});
+
+test('fare splitting: opens when everyone has booked, each pays their own share, collected/outstanding reconcile', async () => {
+  const date = '2027-01-06';
+  const P = await passenger({ travelDate: date, destination: 'Andheri West', expectedArrivalTime: '12:00', passengerCount: 2 });
+  const Q = await passenger({ travelDate: date, destination: 'Andheri West', expectedArrivalTime: '12:05' });
+  const R = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '12:10' });
+  const poolId = (await choose(P, { mode: 'shared', vehicleType: 'suv' })).data.trip.poolId;
+  await choose(Q, { mode: 'shared', vehicleType: 'suv', poolId });
+  await choose(R, { mode: 'shared', vehicleType: 'suv', poolId });
+  await P.api('POST', `/trips/${P.id}/booking`, {});
+  await Q.api('POST', `/trips/${Q.id}/booking`, {});
+
+  // R hasn't booked yet: payment isn't open
+  const waiting = (await payView(P)).data;
+  assert.equal(waiting.blocker.code, 'WAITING_FOR_BOOKINGS');
+  assert.equal(waiting.canPay, false);
+  assert.equal((await startPay(P)).error.code, 'WAITING_FOR_BOOKINGS');
+  await R.api('POST', `/trips/${R.id}/booking`, {});
+
+  const pv = (await payView(P)).data;
+  const total = pv.pool.total;
+  assert.equal(pv.fare.total, total);
+  assert.equal(pv.fare.people, 4); // P's group of 2 + Q + R
+  assert.equal(pv.pool.members.reduce((sum, m) => sum + m.share, 0), total); // shares add up to the fare
+  assert.equal(pv.amount, pv.pool.members.find((m) => m.isYou).share);
+  assert.deepEqual(pv.pool.members.map((m) => m.label), ['You', 'Traveller 1', 'Traveller 2']);
+  assert.equal(JSON.stringify(pv.pool).includes('Test User'), false); // no names
+
+  // P pays; Q and R see P as paid (only paid / not paid - no payment details)
+  const pPay = (await startPay(P)).data.payment;
+  assert.equal((await demoResult(Q, pPay.id, 'success')).error.code, 'PAYMENT_NOT_FOUND'); // not Q's to complete
+  await demoResult(P, pPay.id, 'success');
+  const qv = (await payView(Q)).data;
+  assert.equal(qv.pool.collected, pv.amount);
+  assert.equal(qv.pool.outstanding, total - pv.amount);
+  assert.equal(qv.pool.members.filter((m) => m.paid).length, 1);
+  assert.equal(qv.pool.allPaid, false);
+  assert.equal(JSON.stringify(qv.pool).includes(pPay.id), false);
+  assert.equal(qv.payment, null); // Q's own payment: none yet
+
+  // Everyone pays -> collected equals the fare
+  await demoResult(Q, (await startPay(Q)).data.payment.id, 'success');
+  await demoResult(R, (await startPay(R)).data.payment.id, 'success');
+  const done = (await payView(R)).data.pool;
+  assert.equal(done.allPaid, true);
+  assert.equal(done.collected, total);
+  assert.equal(done.outstanding, 0);
+  // Each payment belongs to its own passenger and trip
+  for (const p of [P, Q, R]) {
+    const mine = await Payment.find({ tripId: p.id });
+    assert.equal(mine.length, 1);
+    assert.equal(String(mine[0].userId), p.userId);
+  }
+
+  // R leaves afterwards: the fare is re-estimated for P and Q; R's payment is kept (no refund processed)
+  await R.api('POST', `/trips/${R.id}/booking/leave-pool`, {});
+  const later = (await payView(P)).data.pool;
+  assert.equal(later.members.length, 2);
+  assert.equal(later.collected, pv.amount + qv.pool.members.find((m) => m.isYou).share);
+  assert.equal((await R.api('GET', '/payments')).data.payments[0].status, 'paid');
+});
+
 // ---- 13. privacy / access control -------------------------------------------------
 test("users can't read or change another user's trips, rides or pools", async () => {
   const owner = await passenger({ travelDate: '2026-12-27' });
@@ -636,6 +1206,177 @@ test("users can't read or change another user's trips, rides or pools", async ()
   // NoSQL-injection style bodies are rejected by validation
   assert.equal((await other.api('POST', '/auth/login', { email: { $gt: '' }, password: { $gt: '' } })).status, 400);
   assert.equal((await owner.api('PUT', `/trips/${owner.id}/ride`, { mode: 'shared', vehicleType: 'sedan', poolId: { $ne: null } })).status, 400);
+});
+
+// ---- 6b. Phase 13 security audit: the gaps not covered above -------------------------
+test('security: bookings, payments, notifications and chat of other users stay private; no secrets in responses', async () => {
+  const date = '2027-01-09';
+  const owner = await bookedSolo(date, '09:00');
+  const stranger = await newUser();
+
+  // Another user's booking: can't read, cancel, leave or pay for it
+  for (const [method, path, body] of [
+    ['GET', `/trips/${owner.id}/booking`],
+    ['POST', `/trips/${owner.id}/booking`, {}],
+    ['POST', `/trips/${owner.id}/booking/cancel`, {}],
+    ['POST', `/trips/${owner.id}/booking/leave-pool`, {}],
+    ['GET', `/trips/${owner.id}/payment`],
+    ['POST', `/trips/${owner.id}/payment`, {}],
+  ]) {
+    assert.equal((await stranger.api(method, path, body)).status, 404, `${method} ${path}`);
+  }
+  assert.equal((await Trip.findById(owner.id)).booking.status, 'confirmed'); // untouched
+
+  // Another user's notification can't be marked read
+  const note = await Notification.findOne({ userId: owner.userId });
+  assert.ok(note, 'the owner has a booking notification');
+  assert.equal((await stranger.api('PATCH', `/notifications/${note._id}/read`)).status, 404);
+  assert.equal((await Notification.findById(note._id)).readAt, null);
+  assert.equal((await stranger.api('GET', '/notifications')).data.notifications.some((n) => String(n.id) === String(note._id)), false);
+
+  // Chat of a pool they are not in; query-operator tricks are ignored or refused
+  const sharer = await passenger({ travelDate: date, expectedArrivalTime: '09:30' });
+  const poolId = String((await choose(sharer, { mode: 'shared', vehicleType: 'sedan' })).data.trip.poolId);
+  assert.equal((await stranger.api('GET', `/pools/${poolId}/messages`)).status, 404);
+  assert.equal((await stranger.api('GET', `/pools/${poolId}/messages?since[$gt]=`)).status, 404);
+  assert.equal((await stranger.api('POST', `/pools/${poolId}/messages`, { text: 'hi', clientMessageId: crypto.randomUUID() })).status, 404);
+
+  // Mass assignment: server-owned fields sent when creating a trip are ignored
+  const forged = await stranger.api(
+    'POST',
+    '/trips',
+    tripBody({ travelDate: date, status: 'ride_selected', userId: owner.userId, isDemo: true, booking: { status: 'confirmed' }, poolId })
+  );
+  assert.equal(forged.status, 201);
+  const saved = await Trip.findById(forged.data.trip.id);
+  assert.equal(saved.status, 'awaiting_verification');
+  assert.equal(String(saved.userId), stranger.userId);
+  assert.equal(saved.isDemo, false);
+  assert.equal(saved.booking, null);
+  assert.equal(saved.poolId ?? null, null);
+
+  // Passwords, hashes and the JWT secret never appear in a response
+  const me = await owner.api('GET', '/auth/me');
+  const text = JSON.stringify([me, forged, await owner.api('GET', `/trips/${owner.id}/booking`), await owner.api('GET', '/payments')]);
+  for (const secret of ['secret123', '$2a$', '$2b$', env.jwtSecret, 'password', 'integration-webhook-secret']) {
+    assert.equal(text.includes(secret), false, `response leaks ${secret}`);
+  }
+  assert.equal((await User.findById(owner.userId).select('+password')).password.startsWith('$2'), true); // bcrypt hash at rest
+});
+
+test('security: webhook needs a valid signature; bad bodies, other origins and headers handled safely', async () => {
+  // Webhook without / with a wrong signature changes nothing
+  const body = JSON.stringify({ event: 'payment.captured', payload: { payment: { entity: { order_id: 'x', amount: 1 } } } });
+  for (const headers of [{}, { 'X-Razorpay-Signature': 'deadbeef', 'X-Razorpay-Event-Id': 'evt_bad' }]) {
+    const res = await fetch(`${base}/payments/webhook`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
+    assert.ok([400, 401].includes(res.status), `unsigned webhook got ${res.status}`);
+  }
+  assert.equal(await PaymentEvent.countDocuments({ eventId: 'evt_bad' }), 0);
+
+  const raw = (init) => fetch(`${base}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '10.9.9.9' }, ...init });
+  // Malformed JSON -> 400, not a crash or a stack trace
+  const bad = await raw({ body: '{"email":' });
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json()).error.code, 'INVALID_JSON');
+  // Oversized body -> 413 before any work is done
+  const big = await raw({ body: JSON.stringify({ email: 'a@b.c', password: 'x'.repeat(20000) }) });
+  assert.equal(big.status, 413);
+
+  // CORS: only the configured web app origin is allowed
+  const evil = await fetch(`${base}/health`, { headers: { Origin: 'https://evil.example' } });
+  assert.notEqual(evil.headers.get('access-control-allow-origin'), 'https://evil.example'); // browser blocks the mismatch
+  const ours = await fetch(`${base}/health`, { headers: { Origin: 'http://localhost:5173' } });
+  assert.equal(ours.headers.get('access-control-allow-origin'), 'http://localhost:5173');
+  // Security headers from helmet; no framework fingerprint
+  assert.equal(ours.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(ours.headers.get('x-powered-by'), null);
+
+  // Unknown routes and missing auth answer in the standard JSON shape
+  const unknown = await fetch(`${base}/nope`);
+  assert.equal(unknown.status, 404);
+  assert.equal((await unknown.json()).success, false);
+  for (const path of ['/trips', '/payments', '/notifications', `/pools/${'a'.repeat(24)}/messages`]) {
+    const res = await fetch(base + path);
+    assert.equal(res.status, 401, path);
+  }
+  const garbage = await fetch(`${base}/trips`, { headers: { Authorization: 'Bearer not.a.jwt' } });
+  assert.equal(garbage.status, 401);
+});
+
+// ---- 6c. Phase 13 end to end: User A + User B share a ride; User C travels alone -------
+test('E2E: two users share a ride from signup to payment and cancellation; a third travels alone', async () => {
+  const date = '2027-01-12';
+  const types = async (u) => (await u.api('GET', '/notifications')).data.notifications.map((n) => n.type);
+
+  // A and B: same flight, nearby destinations
+  const A = await passenger({ travelDate: date, destination: 'Andheri West', expectedArrivalTime: '16:00', flightNumber: 'AI555' });
+  assert.ok((await types(A)).includes('system')); // welcome
+  const B = await passenger({ travelDate: date, destination: 'Andheri West', expectedArrivalTime: '16:10', flightNumber: 'AI555' });
+  const aSees = await options(A);
+  assert.equal(aSees.travellers.length, 1);
+  assert.equal(aSees.travellers[0].sameFlight, true);
+  assert.equal(aSees.travellers[0].isDemo, false); // a real traveller, not sample data
+  assert.ok((await types(A)).includes('compatible_traveller'));
+
+  // A starts a shared SUV, B joins it
+  const poolId = (await choose(A, { mode: 'shared', vehicleType: 'suv' })).data.trip.poolId;
+  assert.equal((await choose(B, { mode: 'shared', vehicleType: 'suv', poolId })).data.trip.poolId, poolId);
+  assert.ok((await types(A)).includes('pool_joined'));
+
+  // Both review and confirm (exactly what they reviewed)
+  for (const u of [A, B]) {
+    const ride = (await u.api('GET', `/trips/${u.id}/ride`)).data.ride;
+    const booked = await u.api('POST', `/trips/${u.id}/booking`, { mode: 'shared', vehicleType: 'suv', poolId, yourShare: ride.pool.fare.yourShare });
+    assert.equal(booked.status, 201, JSON.stringify(booked.error));
+    assert.match(booked.data.booking.reference, /^FP-[A-Z0-9]{8}$/);
+    assert.ok((await types(u)).includes('booking_confirmed'));
+  }
+
+  // Group chat between them
+  const send = (u, text) => u.api('POST', `/pools/${poolId}/messages`, { text, clientMessageId: crypto.randomUUID() });
+  assert.equal((await send(A, 'Meet at gate 4?')).status, 201);
+  assert.equal((await send(B, 'Sure, see you there')).status, 201);
+  const chat = (await B.api('GET', `/pools/${poolId}/messages`)).data;
+  assert.deepEqual(chat.messages.map((m) => m.text), ['Meet at gate 4?', 'Sure, see you there']);
+
+  // Each pays their own share (demo); the shares add up to the fare
+  const aView = (await payView(A)).data;
+  assert.equal(aView.canPay, true);
+  for (const u of [A, B]) {
+    const pay = await startPay(u);
+    assert.equal((await demoResult(u, pay.data.payment.id, 'success')).data.payment.status, 'paid');
+  }
+  const settled = (await payView(B)).data.pool;
+  assert.equal(settled.allPaid, true);
+  assert.equal(settled.collected, aView.pool.total);
+
+  // A cancels: B is told, A loses chat access, B keeps the ride
+  const cancelled = await A.api('POST', `/trips/${A.id}/booking/cancel`, { reason: 'Plans changed' });
+  assert.equal(cancelled.status, 200, JSON.stringify(cancelled.error));
+  assert.equal((await A.api('GET', `/pools/${poolId}/messages`)).status, 404);
+  assert.ok((await types(B)).some((t) => t === 'pool_left' || t === 'booking_updated'));
+  const bManage = (await B.api('GET', `/trips/${B.id}/booking`)).data;
+  assert.equal(bManage.booking.status, 'confirmed');
+  assert.equal((await A.api('GET', `/trips/${A.id}/booking`)).data.booking.status, 'cancelled');
+  assert.equal((await A.api('POST', `/trips/${A.id}/booking/cancel`, {})).status, 409); // only once
+
+  // C travels alone: solo fare, own payment, not visible to anyone as a match
+  const C = await passenger({ travelDate: date, destination: 'Andheri West', expectedArrivalTime: '16:05', flightNumber: 'AI555' });
+  await choose(C, { mode: 'solo', vehicleType: 'sedan' });
+  const cRide = (await C.api('GET', `/trips/${C.id}/ride`)).data.ride;
+  assert.equal((await C.api('POST', `/trips/${C.id}/booking`, {})).status, 201);
+  const cPay = await startPay(C);
+  assert.equal(cPay.data.payment.amount, cRide.soloFare.total);
+  await demoResult(C, cPay.data.payment.id, 'success');
+  assert.equal((await C.api('GET', '/payments')).data.payments.length, 1);
+  assert.equal((await options(B)).travellers.some((t) => t.ride?.mode === 'solo'), false);
+  assert.equal((await C.api('GET', `/pools/${poolId}/messages`)).status, 404);
+
+  // Everyone's trip list shows their own trips only
+  for (const u of [A, B, C]) {
+    const trips = (await u.api('GET', '/trips')).data.trips;
+    assert.deepEqual(trips.map((t) => t.id), [u.id]);
+  }
 });
 
 // ---- 7. data consistency after everything above ------------------------------------

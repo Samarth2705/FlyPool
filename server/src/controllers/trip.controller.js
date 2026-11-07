@@ -2,6 +2,7 @@
 // which is the only source of the trip owner.
 import * as tripService from '../services/trip.service.js';
 import * as rideService from '../services/ride.service.js';
+import * as bookingService from '../services/booking.service.js';
 import { listTripsQuerySchema } from '../validators/trip.validators.js';
 import { AppError } from '../utils/AppError.js';
 
@@ -64,4 +65,28 @@ export async function chooseRide(req, res) {
   await rideService.chooseRide(req.params.tripId, req.userId, req.body);
   const { trip, ride } = await rideService.getRide(req.params.tripId, req.userId);
   res.json({ success: true, data: { trip, ride } });
+}
+
+// POST /api/trips/:tripId/booking - confirm the booking of the chosen ride.
+// 201 with the new booking, or 200 with the existing one if it was already
+// confirmed (so repeating the request is safe).
+export async function confirmBooking(req, res) {
+  const { trip, ride, booking, created } = await bookingService.confirmBooking(req.params.tripId, req.userId, req.body);
+  res.status(created ? 201 : 200).json({ success: true, data: { booking, trip, ride, created } });
+}
+
+// GET /api/trips/:tripId/booking - Ride Management: booking, status,
+// timeline and what can be done now
+export async function getBookingManagement(req, res) {
+  res.json({ success: true, data: await bookingService.getBookingManagement(req.params.tripId, req.userId) });
+}
+
+// POST /api/trips/:tripId/booking/cancel { reason? }
+export async function cancelBooking(req, res) {
+  res.json({ success: true, data: await bookingService.cancelBooking(req.params.tripId, req.userId, req.body) });
+}
+
+// POST /api/trips/:tripId/booking/leave-pool
+export async function leaveSharedRide(req, res) {
+  res.json({ success: true, data: await bookingService.leaveSharedRide(req.params.tripId, req.userId) });
 }
