@@ -18,7 +18,9 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "permissions": ["android.permission.CAMERA"],
+      "permissions": [
+        "android.permission.CAMERA"
+      ],
       "blockedPermissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.READ_EXTERNAL_STORAGE",
@@ -64,6 +66,12 @@
           }
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "ef0b06a5-c8a9-43e3-b20c-9e7eae5c4ad7"
+      }
+    },
+    "owner": "vsamarth"
   }
 }
