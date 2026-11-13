@@ -33,7 +33,7 @@
     "zxing-wasm": "^3.1.6"
   },
   "engines": {
-    "node": ">=20"
+    "node": "24.x"
   },
   "private": true,
   "devDependencies": {
