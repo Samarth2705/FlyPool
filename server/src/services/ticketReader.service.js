@@ -68,35 +68,48 @@ sharp.cache(false); // never keep uploaded images in sharp's memory cache
 
 const invalid = (message) => new AppError(400, 'INVALID_DOCUMENT', message, [{ field: 'document', message }]);
 
+// ---- timings: one log line per document - sizes and milliseconds only, never
+// the document or any text read from it (operators need to see where time goes)
+const logTimings = !env.isTest;
+const since = (start) => Math.round(performance.now() - start);
+
 // ---- OCR worker: started on first use, shared, stopped when idle -----------
 let workerPromise = null;
 let idleTimer = null;
 const IDLE_MS = 60_000;
 
-function ocrWorker() {
-  workerPromise ??= createWorker('eng', 1, {
-    langPath: path.dirname(ENG_TRAINEDDATA),
-    gzip: true,
-    cacheMethod: 'none', // nothing written to disk
-  })
-    .then(async (worker) => {
-      // Don't re-read every unclear line inverted: on photos that doubles the time.
-      // Dark-mode documents are inverted before OCR instead (readImage).
-      await worker.setParameters({ tessedit_do_invert: '0' });
-      return worker;
+function ocrWorker(trace) {
+  if (!workerPromise) {
+    const started = performance.now();
+    if (trace) trace.workerStart = 'starting';
+    workerPromise = createWorker('eng', 1, {
+      langPath: path.dirname(ENG_TRAINEDDATA),
+      gzip: true,
+      cacheMethod: 'none', // nothing written to disk
     })
-    .catch((err) => {
-      workerPromise = null;
-      throw err;
-    });
+      .then(async (worker) => {
+        // Don't re-read every unclear line inverted: on photos that doubles the time.
+        // Dark-mode documents are inverted before OCR instead (readImage).
+        await worker.setParameters({ tessedit_do_invert: '0' });
+        if (trace) trace.workerStart = since(started);
+        return worker;
+      })
+      .catch((err) => {
+        workerPromise = null;
+        throw err;
+      });
+  }
   return workerPromise;
 }
 
-async function ocr(png) {
+async function ocr(png, trace, stage) {
   clearTimeout(idleTimer);
-  const worker = await ocrWorker();
+  const started = performance.now();
+  if (trace) trace.stage = stage;
+  const worker = await ocrWorker(trace);
   try {
     const { data } = await worker.recognize(png);
+    if (trace) trace[stage] = since(started);
     return { text: data.text ?? '', confidence: Math.round(data.confidence ?? 0) };
   } finally {
     idleTimer = setTimeout(stopTicketReader, IDLE_MS);
@@ -115,10 +128,12 @@ export async function stopTicketReader() {
 // ---- images --------------------------------------------------------------------
 const SHARP_FORMAT = { 'image/jpeg': 'jpeg', 'image/png': 'png', 'image/webp': 'webp' };
 
-async function readImage(bytes, mimeType) {
+async function readImage(bytes, mimeType, trace = {}) {
   const input = () => sharp(bytes, { failOn: 'truncated', limitInputPixels: MAX_IMAGE_PIXELS });
   let meta;
   let grey;
+  let started = performance.now();
+  trace.stage = 'decode';
   try {
     meta = await input().metadata();
     if (meta.format !== SHARP_FORMAT[mimeType]) throw new Error('format mismatch');
@@ -130,6 +145,8 @@ async function readImage(bytes, mimeType) {
 
   const width = meta.autoOrient?.width ?? meta.width;
   const height = meta.autoOrient?.height ?? meta.height;
+  trace.size = `${width}x${height}`;
+  trace.decode = since(started);
   if (Math.min(width, height) < MIN_IMAGE_SIDE) return { readable: false, problem: 'too_small' };
 
   const { channels } = await sharp(grey).stats();
@@ -138,6 +155,8 @@ async function readImage(bytes, mimeType) {
 
   // Boarding-pass barcodes first (structured data), then the printed text
   let barcodes = [];
+  started = performance.now();
+  trace.stage = 'barcode';
   try {
     prepareBarcodeEngine();
     const results = await readBarcodes(new Uint8Array(grey), {
@@ -149,6 +168,8 @@ async function readImage(bytes, mimeType) {
   } catch {
     // no barcode reader result - the text alone is used
   }
+  trace.barcode = since(started);
+  trace.barcodes = barcodes.length;
 
   // For OCR: scaled, dark mode inverted, camera grain removed (a 3px median
   // keeps text strokes but makes noisy photos about twice as fast), contrast stretched
@@ -159,8 +180,9 @@ async function readImage(bytes, mimeType) {
   };
   // A quick pass on a small copy first: an image with no readable text (a
   // photo) stops here instead of spending ~10 s of OCR on its texture.
-  const quick = await ocr(await prepare(QUICK_OCR_WIDTH));
-  const { text, confidence } = quick.confidence >= MIN_QUICK_CONFIDENCE ? await ocr(await prepare(OCR_WIDTH)) : quick;
+  const quick = await ocr(await prepare(QUICK_OCR_WIDTH), trace, 'ocrQuick');
+  trace.quickConfidence = quick.confidence;
+  const { text, confidence } = quick.confidence >= MIN_QUICK_CONFIDENCE ? await ocr(await prepare(OCR_WIDTH), trace, 'ocrFull') : quick;
   return { readable: true, source: barcodes.length ? 'barcode+ocr' : 'ocr', text, barcodes, confidence };
 }
 
@@ -189,17 +211,28 @@ async function readPdf(bytes) {
 //   { readable: false, problem } | { readable: true, source, text, barcodes, confidence }
 // Throws 400 INVALID_DOCUMENT for corrupted files, 503 if reading takes too long.
 export async function readTicketDocument({ kind, mimeType, bytes }) {
+  const trace = { kind, kb: Math.round(bytes.length / 1024), stage: 'start' };
+  const started = performance.now();
+  let outcome = 'error';
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
+      outcome = `timeout during ${trace.stage}`;
       // Stop the OCR still working on this image, so the next upload isn't stuck behind it
       stopTicketReader().catch(() => {});
       reject(new AppError(503, 'DOCUMENT_READ_TIMEOUT', 'Reading your document took too long. Please try again, or upload a clearer, smaller image.'));
     }, env.documentReadTimeoutMs);
   });
   try {
-    return await Promise.race([kind === 'pdf' ? readPdf(bytes) : readImage(bytes, mimeType), timeout]);
+    const result = await Promise.race([kind === 'pdf' ? readPdf(bytes) : readImage(bytes, mimeType, trace), timeout]);
+    outcome = result.readable ? `read (${result.source})` : `unreadable (${result.problem})`;
+    return result;
   } finally {
     clearTimeout(timer);
+    if (logTimings) {
+      const { stage, ...facts } = trace;
+      const parts = Object.entries(facts).map(([k, v]) => `${k}=${typeof v === 'number' && !['kb', 'barcodes', 'quickConfidence'].includes(k) ? `${v}ms` : v}`);
+      console.log(`[ticket-reader] ${outcome} in ${since(started)}ms: ${parts.join(' ')}`);
+    }
   }
 }
