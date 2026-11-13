@@ -10,7 +10,7 @@ process.env.JWT_SECRET ??= 'unit-test-secret-that-is-long-enough-123';
 process.env.FLIGHT_VERIFICATION_MODE = 'demo';
 
 const { inspectDocument, demoVerifier, verificationLevels } = await import('../../src/services/flightVerification.service.js');
-const { readTicketDocument, stopTicketReader } = await import('../../src/services/ticketReader.service.js');
+const { readTicketDocument, stopTicketReader, OCR_ENGINE_FILES } = await import('../../src/services/ticketReader.service.js');
 const { findDates, findFlightNumbers, nameAppears, parseBoardingPassBarcode, showsFlightNumber } = await import('../../src/services/ticketAnalysis.js');
 const T = await import('../helpers/tickets.js');
 
@@ -291,4 +291,13 @@ test('authenticity is only set when a non-demo, trusted source confirms (TEST DO
   assert.deepEqual(confirmed.authenticity, { confirmed: true, source: 'airline-api-test-double', reference: 'PNR-CHECK-1' });
   // A provider that matched the details but did not confirm the booking: not authenticated
   assert.equal(verificationLevels('airline-api-test-double', { passed: true, extraction }).levels.authenticityConfirmed, false);
+});
+
+// Deployment: the OCR engine's WebAssembly files are loaded by path at runtime,
+// so they are listed for Vercel's file tracing. If a tesseract.js upgrade renames
+// them, OCR would crash only on the server - catch it here instead.
+test('every OCR engine file listed for deployment exists', async () => {
+  const fs = await import('node:fs');
+  assert.equal(OCR_ENGINE_FILES.length, 6);
+  for (const file of OCR_ENGINE_FILES) assert.ok(fs.existsSync(file), `missing: ${file}`);
 });

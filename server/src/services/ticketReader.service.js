@@ -44,6 +44,21 @@ const ZXING_READER_WASM = dataFile(
   'zxing-wasm/reader/zxing_reader.wasm',
 );
 
+// The OCR engine itself: tesseract.js's worker loads ONE of these WebAssembly
+// files by path at runtime - which one depends on the CPU (relaxed SIMD / SIMD /
+// neither) and the OCR mode - so Vercel's file tracing cannot see them. Listed
+// here (not read by this module) so every variant is deployed. Without them the
+// OCR worker crashes on start (ENOENT ...relaxedsimd.wasm) and every image read
+// times out.
+export const OCR_ENGINE_FILES = [
+  fileURLToPath(new URL('../../node_modules/tesseract.js-core/tesseract-core-relaxedsimd.wasm', import.meta.url)),
+  fileURLToPath(new URL('../../node_modules/tesseract.js-core/tesseract-core-relaxedsimd-lstm.wasm', import.meta.url)),
+  fileURLToPath(new URL('../../node_modules/tesseract.js-core/tesseract-core-simd.wasm', import.meta.url)),
+  fileURLToPath(new URL('../../node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm', import.meta.url)),
+  fileURLToPath(new URL('../../node_modules/tesseract.js-core/tesseract-core.wasm', import.meta.url)),
+  fileURLToPath(new URL('../../node_modules/tesseract.js-core/tesseract-core-lstm.wasm', import.meta.url)),
+];
+
 // The barcode engine comes from the local file. (By default zxing-wasm
 // downloads it from the jsDelivr CDN on first use.) Read on first use, so a
 // problem only skips barcodes - the printed text is still read.
