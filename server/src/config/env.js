@@ -3,6 +3,7 @@
 // In production, unsafe settings stop the server instead of running insecurely.
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
+import { databaseMismatch, databaseNameFromUri } from './databaseName.js';
 
 dotenv.config({ quiet: true });
 
@@ -16,6 +17,16 @@ const missing = ['MONGODB_URI', 'JWT_SECRET'].filter((name) => !process.env[name
 if (missing.length > 0) {
   fail(`Missing required environment variables: ${missing.join(', ')}`);
 }
+
+// Production and Vercel Preview deployments use different databases
+// (config/databaseName.js): a preview pointing at production data - or the
+// reverse - stops here, before any connection is opened.
+const databaseName = databaseNameFromUri(process.env.MONGODB_URI);
+if (!databaseName) {
+  fail('MONGODB_URI must be a mongodb:// or mongodb+srv:// connection string.');
+}
+const databaseProblem = databaseMismatch(process.env.VERCEL_ENV, databaseName);
+if (databaseProblem) fail(databaseProblem);
 
 if (process.env.JWT_SECRET.length < 32) {
   fail('JWT_SECRET is too short. Use at least 32 random characters.');
@@ -70,6 +81,14 @@ if (!['demo', 'off'].includes(paymentMode)) {
   fail('PAYMENT_MODE must be "demo" or "off" - no real payment provider is connected yet.');
 }
 
+// Identity verification provider (services/identity.service.js). Default: off -
+// no provider is connected, and nobody can be shown as identity-verified.
+// "sandbox" is the automated tests' stand-in and is refused everywhere else.
+const identityProvider = (process.env.IDENTITY_PROVIDER || 'off').trim().toLowerCase();
+if (identityProvider === 'sandbox' && process.env.NODE_ENV !== 'test') {
+  fail('IDENTITY_PROVIDER=sandbox is only for automated tests (NODE_ENV=test). Use off, or a real KYC provider.');
+}
+
 if (isProduction) {
   if (paymentMode === 'demo') {
     console.warn('[config] WARNING: PAYMENT_MODE=demo in production - payments are simulated, no money is collected.');
@@ -87,6 +106,8 @@ export const env = {
   isTest: process.env.NODE_ENV === 'test',
   port: Number(process.env.PORT) || 5000,
   mongodbUri: process.env.MONGODB_URI,
+  databaseName, // e.g. "flypool" - safe to log (no credentials)
+  vercelEnv: process.env.VERCEL_ENV || null, // "production" / "preview" on Vercel
   jwtSecret: process.env.JWT_SECRET,
   jwtExpiresIn: readDuration('JWT_EXPIRES_IN', '1d'), // website login cookie
   jwtMobileExpiresIn: readDuration('JWT_MOBILE_EXPIRES_IN', '30d'), // mobile app bearer token
@@ -102,11 +123,15 @@ export const env = {
   expoAccessToken: process.env.EXPO_ACCESS_TOKEN || null,
   // Payments (services/payment.service.js)
   paymentMode,
+  identityProvider,
+  identityWebhookSecret: process.env.IDENTITY_WEBHOOK_SECRET || null,
   // Signs payment provider webhooks (HMAC-SHA256 of the raw body, header
   // X-Razorpay-Signature). Without it the webhook endpoint refuses events.
   paymentWebhookSecret: process.env.PAYMENT_WEBHOOK_SECRET || null,
   // How long a flight-verification service may take before we give up
   verificationTimeoutMs: Number(process.env.VERIFICATION_TIMEOUT_MS) || 10000,
+  // Reading an uploaded ticket (decode, barcode, OCR / PDF text)
+  documentReadTimeoutMs: Number(process.env.DOCUMENT_READ_TIMEOUT_MS) || 20000,
   // One line per request (method, path, status, time) - never bodies or cookies
   logRequests: process.env.LOG_REQUESTS ? process.env.LOG_REQUESTS === 'true' : process.env.NODE_ENV !== 'test',
 };

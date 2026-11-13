@@ -3,15 +3,18 @@
 // candidates, joining pools) is in services/ride.service.js.
 //
 // Two trips are COMPATIBLE when (numbers in config/pricing.js -> MATCHING):
-//   - both are picked up at the airport, at the same terminal
+//   - both are picked up at the SAME airport (Mumbai BOM or Navi Mumbai NMI),
+//     at the same terminal - passengers at different airports never match
 //   - they land within MATCHING.arrivalWindowMinutes of each other
 //     (and on the same flight, if MATCHING.requireSameFlight is on)
 //   - their drop-offs are on the way: nobody's trip gets longer than the
-//     allowed detour. Destinations are compared as areas ("Lokhandwala,
-//     Andheri West" = Andheri West); unknown places only match the same text.
+//     allowed detour, measured from their airport. Destinations are compared
+//     as areas ("Lokhandwala, Andheri West" = Andheri West); a place that isn't
+//     a known area (e.g. typed under "Others") only matches the same place,
+//     compared as normalised text - never just because both were typed in.
 // A trip can JOIN a pool when it is compatible with every member and the
 // whole group (people and bags) fits the pool's vehicle.
-import { AIRPORT, resolveArea, normalizePlace } from '../data/mumbaiAreas.js';
+import { AIRPORT, airportByCode, airportOfTrip, resolveArea, normalizePlace } from '../data/mumbaiAreas.js';
 import { distanceKm } from '../utils/geo.js';
 import { MATCHING } from '../config/pricing.js';
 import { planRoute, estimateRideFare } from './fare.service.js';
@@ -26,12 +29,16 @@ export function normalizeFlightNumber(value) {
 
 // The facts about a trip that matching needs
 export function describeTrip(trip) {
-  const fromAirport = trip.pickupLocation === AIRPORT.name;
+  const airport = airportOfTrip(trip);
+  const fromAirport = Boolean(airport);
   return {
     id: String(trip._id ?? trip.id),
     userId: String(trip.userId),
     fromAirport,
-    pickupKey: fromAirport ? `${AIRPORT.code}-${trip.pickupTerminal}` : `custom:${normalizePlace(trip.pickupLocation)}`,
+    airport: airport?.code ?? null,
+    origin: airport?.point ?? null, // where the cab starts
+    // "BOM-T2", "NMI-T1": only trips with the same key can share
+    pickupKey: fromAirport ? `${airport.code}-${trip.pickupTerminal}` : `custom:${normalizePlace(trip.pickupLocation)}`,
     destination: trip.destination,
     destinationKey: normalizePlace(trip.destination),
     area: resolveArea(trip.destination), // { name, point } or null if unknown
@@ -46,12 +53,19 @@ export function describeTrip(trip) {
   };
 }
 
+// A pool's airport, from its pickup key ("NMI-T1"); pools made before
+// airports were added are Mumbai Airport ("BOM-T2")
+export const airportOfPool = (pool) => airportByCode(String(pool.pickupKey).split('-')[0]) ?? AIRPORT;
+
 // The same facts for a member stored in a pool
 export function describeMember(member, pool) {
+  const airport = airportOfPool(pool);
   return {
     id: String(member.tripId),
     userId: String(member.userId),
     fromAirport: true,
+    airport: airport.code,
+    origin: airport.point,
     pickupKey: pool.pickupKey,
     destination: member.destination,
     destinationKey: normalizePlace(member.destination),
@@ -74,9 +88,10 @@ function detourAllowanceKm(directKm) {
 // Can these passengers share one cab without anyone's trip getting too long?
 export function routeIsFair(members) {
   if (members.every((m) => m.area)) {
-    const { order } = planRoute(members.map((m) => ({ key: m.id, point: m.area.point })));
+    const origin = members[0].origin ?? AIRPORT.point;
+    const { order } = planRoute(members.map((m) => ({ key: m.id, point: m.area.point })), origin);
     return order.every((stop) => {
-      const directKm = distanceKm(AIRPORT.point, stop.point);
+      const directKm = distanceKm(origin, stop.point);
       return stop.atKm - directKm <= detourAllowanceKm(directKm);
     });
   }
@@ -86,7 +101,8 @@ export function routeIsFair(members) {
 
 // Pickup, arrival time and flight rules between two trips (not destinations)
 function sameJourneyStart(a, b) {
-  if (!a.fromAirport || !b.fromAirport || a.pickupKey !== b.pickupKey) return false;
+  if (!a.fromAirport || !b.fromAirport) return false;
+  if (a.airport !== b.airport || a.pickupKey !== b.pickupKey) return false; // same airport, same terminal
   if (Math.abs(a.arrivalAt - b.arrivalAt) > MATCHING.arrivalWindowMinutes * 60 * 1000) return false;
   if (MATCHING.requireSameFlight && (!a.flightNumber || a.flightNumber !== b.flightNumber)) return false;
   return true;
@@ -141,5 +157,6 @@ export function estimateForMembers(vehicle, members) {
   return estimateRideFare(
     vehicle,
     members.map((m) => ({ key: m.id, point: m.fromAirport ? (m.area?.point ?? null) : null, partySize: m.partySize })),
+    members[0]?.origin ?? AIRPORT.point,
   );
 }

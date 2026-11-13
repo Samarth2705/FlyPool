@@ -14,6 +14,7 @@ import { verificationLimiter } from './middleware/rateLimiter.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { requireDatabase } from './middleware/requireDatabase.js';
 import { paymentWebhook } from './controllers/payment.controller.js';
+import { identityWebhook } from './controllers/profile.controller.js';
 
 const app = express();
 
@@ -41,6 +42,9 @@ app.post('/api/trips/:tripId/verification', requireAuth, verificationLimiter, ex
 // this route reads the raw body (before the JSON parser). No login - the
 // signature authenticates it (services/payment.service.js).
 app.post('/api/payments/webhook', express.raw({ type: '*/*', limit: '100kb' }), requireDatabase, paymentWebhook);
+// Identity (KYC) provider results: signed like the payment webhook. Small JSON
+// only - a provider never sends documents here.
+app.post('/api/identity/webhook', express.raw({ type: '*/*', limit: '16kb' }), requireDatabase, identityWebhook);
 
 // Everything else: small JSON bodies only
 app.use(express.json({ limit: '10kb' }));

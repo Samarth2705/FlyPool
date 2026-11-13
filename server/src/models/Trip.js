@@ -18,6 +18,7 @@
 // can't confirm or complete a real booking. Past trips are recognised by
 // their arrival time instead.
 import mongoose from 'mongoose';
+import { AIRPORTS, airportOfTrip } from '../data/mumbaiAreas.js';
 
 const { Schema } = mongoose;
 
@@ -47,8 +48,43 @@ const verificationSchema = new Schema(
       sizeBytes: Number,
       receivedAt: Date,
     },
-    // Reading details from the document (OCR) - "not_configured" for now
-    extraction: { status: { type: String, default: 'not_configured' } },
+    // What was read from the document (barcode / OCR / PDF text) - facts only:
+    // never the document's text or the passenger's name.
+    //   status: "read" | "unreadable" | "not_configured" (trips verified before reading existed)
+    extraction: {
+      status: { type: String, default: 'not_configured' },
+      problem: String, // why it was unreadable: blank, too_small, no_text, ...
+      source: String, // ocr | barcode+ocr | pdf_text
+      confidence: Number, // OCR confidence 0-100 (images only)
+      flightNumbers: { type: [String], default: undefined }, // read exactly as written
+      flightMatched: Boolean, // the entered flight number is on the document (allowing OCR look-alikes)
+      dates: { type: [String], default: undefined },
+      airportFound: Boolean, // the trip's airport (BOM / NMI) is on the document
+      nameMatched: Boolean,
+      boardingPassBarcode: Boolean,
+      // The flight as read off the document (null = not found). Never the passenger's name.
+      details: {
+        airline: String,
+        flightNumber: String,
+        departureAirport: String,
+        arrivalAirport: String,
+        date: String,
+        departureTime: String,
+      },
+    },
+    // What this verification established - separately (flightVerification.service.js)
+    levels: {
+      fileAccepted: Boolean,
+      documentReadable: Boolean,
+      detailsExtracted: Boolean,
+      detailsMatched: Boolean,
+      authenticityConfirmed: Boolean, // only a trusted airline / booking source can set this
+    },
+    authenticity: {
+      confirmed: { type: Boolean, default: false },
+      source: String, // the trusted source that confirmed it (none in demo mode)
+      reference: String,
+    },
     checks: [{ _id: false, name: String, passed: Boolean, message: String }],
     checkedAt: Date,
   },
@@ -89,6 +125,10 @@ const tripSchema = new Schema(
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
     pickupLocation: { type: String, required: true, trim: true, maxlength: 120 },
+    // The airport's code when picking up at one ("BOM" Mumbai, "NMI" Navi Mumbai),
+    // otherwise null. Trips saved before airports were added don't have it:
+    // it's worked out from pickupLocation when read (see toJSON / airportOfTrip).
+    airport: { type: String, enum: [...AIRPORTS.map((a) => a.code), null], default: undefined },
     // "T1" or "T2" when picking up at the airport, otherwise null
     pickupTerminal: { type: String, enum: ['T1', 'T2', null], default: null },
     destination: { type: String, required: true, trim: true, maxlength: 120 },
@@ -141,6 +181,7 @@ const tripSchema = new Schema(
         delete ret.__v;
         delete ret.clientRequestId;
         if (ret.poolId) ret.poolId = ret.poolId.toString();
+        ret.airport = airportOfTrip(ret)?.code ?? null; // also for trips saved before airports were added
         return ret;
       },
     },

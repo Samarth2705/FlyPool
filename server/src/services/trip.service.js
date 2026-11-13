@@ -5,8 +5,11 @@
 import { Trip } from '../models/Trip.js';
 import { AppError } from '../utils/AppError.js';
 import { notifyCompatibleTravellers, quietly } from './notification.service.js';
-import { todayInMumbai, tripDetailsSchema, MUMBAI_AIRPORT } from '../validators/trip.validators.js';
-import { inspectDocument, verifyFlightDetails } from './flightVerification.service.js';
+import { todayInMumbai, tripDetailsSchema } from '../validators/trip.validators.js';
+import { airportByName, airportOfTrip } from '../data/mumbaiAreas.js';
+import { inspectDocument, requireVerificationAvailable, verifyFlightDetails } from './flightVerification.service.js';
+import { readTicketDocument } from './ticketReader.service.js';
+import { User } from '../models/User.js';
 import { VERIFIED_STATUSES } from './matching.service.js';
 import * as rideService from './ride.service.js';
 
@@ -114,7 +117,9 @@ export async function updateTrip(tripId, userId, changes) {
     openToPooling: trip.openToPooling,
   };
   const merged = { ...current, ...changes };
-  if (merged.pickupLocation !== MUMBAI_AIRPORT && !('pickupTerminal' in changes)) merged.pickupTerminal = null;
+  // A new pickup (or one that isn't an airport) starts without the old terminal
+  const pickupChanged = 'pickupLocation' in changes && changes.pickupLocation !== current.pickupLocation;
+  if (!('pickupTerminal' in changes) && (pickupChanged || !airportByName(merged.pickupLocation))) merged.pickupTerminal = null;
 
   const result = tripDetailsSchema.safeParse(merged);
   if (!result.success) {
@@ -141,14 +146,28 @@ export async function verifyFlight(tripId, userId, { airline, flightNumber, sche
     throw new AppError(409, 'ALREADY_VERIFIED', 'This flight has already been verified.');
   }
 
-  const documentFacts = inspectDocument(document); // throws if not a valid file
-  const result = await verifyFlightDetails({ airline, flightNumber, travelDate: trip.travelDate, today: todayInMumbai() });
+  const { facts: documentFacts, bytes } = inspectDocument(document); // 400 if not a valid file
+  requireVerificationAvailable(); // 503 if switched off - before any reading
+  // Read the document (400 if damaged; unreadable -> a failed check below)
+  const content = await readTicketDocument({ kind: documentFacts.kind, mimeType: document.mimeType, bytes });
+  const user = await User.findById(userId).select('name');
+  const result = await verifyFlightDetails({
+    airline,
+    flightNumber,
+    travelDate: trip.travelDate,
+    today: todayInMumbai(),
+    passengerName: user?.name ?? '',
+    airport: airportOfTrip(trip)?.code ?? null,
+    document: content,
+  });
 
   trip.verification = {
     status: result.passed ? 'verified' : 'failed',
     method: result.method,
     document: { ...documentFacts, receivedAt: new Date() },
-    extraction: { status: 'not_configured' },
+    extraction: result.extraction ?? { status: 'not_configured' },
+    levels: result.levels,
+    authenticity: result.authenticity,
     checks: result.checks,
     checkedAt: new Date(),
   };
@@ -159,8 +178,8 @@ export async function verifyFlight(tripId, userId, { airline, flightNumber, sche
       flightNumber: result.flight.flightNumber,
       flightDate: trip.travelDate,
       scheduledArrivalTime,
-      arrivalAirport: 'BOM',
-      arrivalTerminal: trip.pickupLocation === MUMBAI_AIRPORT ? trip.pickupTerminal : undefined,
+      arrivalAirport: airportOfTrip(trip)?.code ?? 'BOM',
+      arrivalTerminal: airportOfTrip(trip) ? trip.pickupTerminal : undefined,
     };
     trip.expectedArrivalTime = scheduledArrivalTime;
     trip.arrivalAt = arrivalMoment(trip.travelDate, scheduledArrivalTime);

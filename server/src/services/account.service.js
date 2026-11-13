@@ -17,6 +17,7 @@ import { Trip } from '../models/Trip.js';
 import { cancelTrip } from './ride.service.js';
 import { Notification } from '../models/Notification.js';
 import { DeviceToken } from '../models/DeviceToken.js';
+import { IdentityVerification } from '../models/IdentityVerification.js';
 import { AppError } from '../utils/AppError.js';
 
 export async function deleteAccount(userId, password) {
@@ -33,7 +34,12 @@ export async function deleteAccount(userId, password) {
 
   // Their notifications and phones' push tokens go with the account. Messages
   // they sent in a group chat stay for the others, shown as "Former passenger".
-  await Promise.all([Notification.deleteMany({ userId }), DeviceToken.deleteMany({ userId })]);
+  // Identity verification results go with the account (retention: kept only while it exists)
+  await Promise.all([
+    Notification.deleteMany({ userId }),
+    DeviceToken.deleteMany({ userId }),
+    IdentityVerification.deleteMany({ userId }),
+  ]);
   await User.deleteOne({ _id: userId });
   return { cancelledTrips: upcoming.length };
 }

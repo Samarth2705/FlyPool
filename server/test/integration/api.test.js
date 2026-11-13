@@ -36,18 +36,24 @@ const { ChatMessage } = await import('../../src/models/ChatMessage.js');
 const { setPushTransport } = await import('../../src/services/push.service.js');
 const { Payment } = await import('../../src/models/Payment.js');
 const { PaymentEvent } = await import('../../src/models/PaymentEvent.js');
+const { IdentityVerification } = await import('../../src/models/IdentityVerification.js');
+const { RideIntent } = await import('../../src/models/RideIntent.js');
+const { PoolLock } = await import('../../src/models/PoolLock.js');
+const { stopTicketReader } = await import('../../src/services/ticketReader.service.js');
+const T = await import('../helpers/tickets.js');
 
 let server;
 let base;
 
 before(async () => {
   await mongoose.connect(process.env.MONGODB_URI);
-  await Promise.all([User.init(), Trip.init(), Pool.init(), RevokedToken.init(), Notification.init(), DeviceToken.init(), ChatMessage.init(), Payment.init(), PaymentEvent.init()]); // build unique indexes first
+  await Promise.all([User.init(), Trip.init(), Pool.init(), RevokedToken.init(), Notification.init(), DeviceToken.init(), ChatMessage.init(), Payment.init(), PaymentEvent.init(), IdentityVerification.init(), RideIntent.init(), PoolLock.init()]); // build unique indexes first
   server = app.listen(0);
   base = `http://127.0.0.1:${server.address().port}/api`;
 });
 
 after(async () => {
+  await stopTicketReader();
   server?.close();
   await mongoose.disconnect();
   await replSet.stop();
@@ -55,11 +61,9 @@ after(async () => {
 
 // ---- helpers --------------------------------------------------------------------
 const AIRPORT = 'Chhatrapati Shivaji Maharaj International Airport, Mumbai';
-const PNG = Buffer.from(
-  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4d90000000049454e44ae426082',
-  'hex',
-).toString('base64');
-const DOC = { mimeType: 'image/png', dataBase64: PNG };
+// A ticket PDF showing this passenger's name, flight and date (test/helpers/tickets.js)
+const ticketFor = (u, { airline = 'Air India', flightNumber = 'AI123', date = FUTURE_DATE, ...rest } = {}) =>
+  T.asDocument(T.ticketPdf(T.ticketLines({ name: u.name, airline, flightNumber, date, ...rest })), 'application/pdf');
 const FUTURE_DATE = '2026-12-20';
 let userCounter = 0;
 
@@ -97,7 +101,7 @@ async function newUser() {
     password: 'secret123',
   });
   assert.equal(res.status, 201, JSON.stringify(res.error));
-  return { api, email: `user${n}@test.flypool.invalid`, userId: res.data.user.id };
+  return { api, name: `Test User ${n}`, email: `user${n}@test.flypool.invalid`, userId: res.data.user.id };
 }
 
 const tripBody = (overrides = {}) => ({
@@ -122,7 +126,8 @@ async function passenger({ verify = true, airline = 'Air India', flightNumber = 
       airline,
       flightNumber,
       scheduledArrivalTime: created.data.trip.expectedArrivalTime,
-      document: DOC,
+      // the ticket names the trip's airport (Mumbai BOM by default, or Navi Mumbai NMI)
+      document: ticketFor(u, { airline, flightNumber, date: created.data.trip.travelDate, ...(created.data.trip.airport === 'NMI' ? { to: 'NMI Navi Mumbai T1' } : {}) }),
     });
     assert.equal(v.status, 200, JSON.stringify(v.error));
   }
@@ -321,7 +326,7 @@ test('deleting an account removes the user, cancels upcoming trips, keeps past o
   assert.equal((await web('POST', '/auth/login', { email: user.email, password: 'secret123' })).status, 200);
 
   // An upcoming trip in a shared ride (own date, so other tests never match it), and a past trip
-  const upcoming = await passenger({ user: { api: user.api }, travelDate: '2026-12-27' });
+  const upcoming = await passenger({ user: { api: user.api, name: user.name }, travelDate: '2026-12-27' });
   assert.equal((await choose(upcoming, { mode: 'shared', vehicleType: 'sedan' })).status, 200);
   const poolId = (await Trip.findById(upcoming.id)).poolId;
   const past = await Trip.create({
@@ -405,7 +410,7 @@ test('trip creation persists, retries do not duplicate, current trip follows sta
 test('verification failure keeps the trip unchanged and the passenger can retry', async () => {
   const p = await passenger({ verify: false, expectedArrivalTime: '09:00' });
   const wrongAirline = await p.api('POST', `/trips/${p.id}/verification`, {
-    airline: 'Indigo Airlines', flightNumber: 'AI 123', scheduledArrivalTime: '11:30', document: DOC,
+    airline: 'Indigo Airlines', flightNumber: 'AI 123', scheduledArrivalTime: '11:30', document: ticketFor(p, { flightNumber: 'AI 123' }),
   });
   assert.equal(wrongAirline.status, 422);
   assert.match(wrongAirline.error.message, /operated by Air India/);
@@ -417,10 +422,10 @@ test('verification failure keeps the trip unchanged and the passenger can retry'
   assert.equal(trip.verification.status, 'failed');
 
   for (const [airline, flightNumber] of [['Some Airline', 'ZZ 999'], ['Vistara', 'UK 945']]) {
-    const unknown = await p.api('POST', `/trips/${p.id}/verification`, { airline, flightNumber, scheduledArrivalTime: '11:30', document: DOC });
+    const unknown = await p.api('POST', `/trips/${p.id}/verification`, { airline, flightNumber, scheduledArrivalTime: '11:30', document: ticketFor(p, { airline, flightNumber }) });
     assert.equal(unknown.status, 422, `${airline} ${flightNumber} must not verify`);
   }
-  const malformed = await p.api('POST', `/trips/${p.id}/verification`, { airline: 'IndiGo', flightNumber: 'hello', scheduledArrivalTime: '11:30', document: DOC });
+  const malformed = await p.api('POST', `/trips/${p.id}/verification`, { airline: 'IndiGo', flightNumber: 'hello', scheduledArrivalTime: '11:30', document: ticketFor(p) });
   assert.equal(malformed.status, 400);
   const fakeFile = await p.api('POST', `/trips/${p.id}/verification`, {
     airline: 'Air India', flightNumber: 'AI 123', scheduledArrivalTime: '11:30',
@@ -428,7 +433,7 @@ test('verification failure keeps the trip unchanged and the passenger can retry'
   });
   assert.equal(fakeFile.error.code, 'INVALID_DOCUMENT');
 
-  const retry = await p.api('POST', `/trips/${p.id}/verification`, { airline: 'Air India', flightNumber: 'aic 0123', scheduledArrivalTime: '11:30', document: DOC });
+  const retry = await p.api('POST', `/trips/${p.id}/verification`, { airline: 'Air India', flightNumber: 'aic 0123', scheduledArrivalTime: '11:30', document: ticketFor(p, { flightNumber: 'AI 123' }) });
   assert.equal(retry.status, 200);
   trip = retry.data.trip;
   assert.equal(trip.status, 'flight_verified');
@@ -439,7 +444,7 @@ test('verification failure keeps the trip unchanged and the passenger can retry'
 
 test('verification unavailable or failing service never reports success', async () => {
   const p = await passenger({ verify: false });
-  const call = () => p.api('POST', `/trips/${p.id}/verification`, { airline: 'Air India', flightNumber: 'AI123', scheduledArrivalTime: '10:00', document: DOC });
+  const call = () => p.api('POST', `/trips/${p.id}/verification`, { airline: 'Air India', flightNumber: 'AI123', scheduledArrivalTime: '10:00', document: ticketFor(p) });
   const original = env.flightVerificationMode;
   try {
     env.flightVerificationMode = 'off'; // e.g. production without a provider configured
@@ -462,6 +467,56 @@ test('verification unavailable or failing service never reports success', async 
   const trip = (await p.api('GET', `/trips/${p.id}`)).data.trip;
   assert.equal(trip.status, 'awaiting_verification');
   assert.equal(trip.verification.status, 'not_started'); // nothing recorded
+});
+
+test('Phase 15: the document is read - blank, unrelated and mismatched tickets are refused through the API', async () => {
+  const p = await passenger({ verify: false, travelDate: '2027-01-15', expectedArrivalTime: '08:00' });
+  const send = (document, flightNumber = 'AI 123') =>
+    p.api('POST', `/trips/${p.id}/verification`, { airline: 'Air India', flightNumber, scheduledArrivalTime: '08:00', document });
+  const date = '2027-01-15';
+
+  // Black image, unrelated photo, other flight, other date: each refused with its reason
+  const attempts = [
+    [T.asDocument(await T.blankImage('#000000'), 'image/jpeg'), 'document_readable', /looks blank/],
+    [T.asDocument(await T.photoImage(), 'image/jpeg'), 'ticket_document', /doesn’t look like a boarding pass/],
+    [ticketFor(p, { flightNumber: 'AI 456', date }), 'document_flight_number', /shows flight AI 456, not AI 123/],
+    [ticketFor(p, { flightNumber: 'AI 123', date: '2027-01-22' }), 'document_date', /but your trip is on 15 Jan 2027/],
+  ];
+  for (const [document, check, message] of attempts) {
+    const res = await send(document);
+    assert.equal(res.status, 422, check);
+    assert.equal(res.error.code, 'VERIFICATION_FAILED');
+    assert.match(res.error.message, message);
+    assert.deepEqual(res.error.details.map((d) => d.name), [check]);
+  }
+  let trip = (await p.api('GET', `/trips/${p.id}`)).data.trip;
+  assert.equal(trip.status, 'awaiting_verification'); // nothing approved
+  assert.equal(trip.verification.status, 'failed');
+  assert.equal(trip.flight, undefined);
+
+  // A damaged file is refused as a file (400), not "checked"
+  const broken = await send({ mimeType: 'application/pdf', dataBase64: Buffer.from('%PDF-1.4\nbroken').toString('base64') });
+  assert.equal(broken.error.code, 'INVALID_DOCUMENT');
+
+  // The right ticket verifies - labelled as a demo check, with what was read stored as facts only
+  const ok = await send(ticketFor(p, { flightNumber: 'AI 123', date }));
+  assert.equal(ok.status, 200, JSON.stringify(ok.error));
+  trip = ok.data.trip;
+  assert.equal(trip.status, 'flight_verified');
+  assert.equal(trip.verification.method, 'demo');
+  assert.equal(trip.verification.extraction.status, 'read');
+  assert.equal(trip.verification.extraction.source, 'pdf_text');
+  // Five separate answers - and demo mode never claims the booking is authentic
+  assert.deepEqual(trip.verification.levels, { fileAccepted: true, documentReadable: true, detailsExtracted: true, detailsMatched: true, authenticityConfirmed: false });
+  assert.equal(trip.verification.authenticity.confirmed, false);
+  assert.deepEqual(
+    { ...trip.verification.extraction.details },
+    { airline: 'Air India', flightNumber: 'AI123', departureAirport: 'DEL', arrivalAirport: 'BOM', date, departureTime: null },
+  );
+  assert.deepEqual(trip.verification.extraction.flightNumbers, ['AI123']);
+  assert.ok(trip.verification.extraction.dates.includes(date));
+  const stored = JSON.stringify((await Trip.findById(p.id)).toObject());
+  for (const text of [p.name, 'X7K2QZ', 'E-TICKET']) assert.equal(stored.includes(text), false, `stored ${text}`);
 });
 
 test('the 8 MB upload route rejects anonymous requests before reading the body', async () => {
@@ -1377,6 +1432,433 @@ test('E2E: two users share a ride from signup to payment and cancellation; a thi
     const trips = (await u.api('GET', '/trips')).data.trips;
     assert.deepEqual(trips.map((t) => t.id), [u.id]);
   }
+});
+
+// ---- airports and destinations ------------------------------------------------------
+const NMI_NAME = 'Navi Mumbai International Airport';
+
+test('airports: Navi Mumbai trips store their airport, are verified against it, and only match the same airport', async () => {
+  const date = '2027-01-20';
+  // Created without a terminal choice: Navi Mumbai Airport has only Terminal 1
+  const u = await newUser();
+  const created = await u.api('POST', '/trips', tripBody({ pickupLocation: NMI_NAME, pickupTerminal: null, travelDate: date, destination: 'Kharghar' }));
+  assert.equal(created.status, 201, JSON.stringify(created.error));
+  assert.equal(created.data.trip.airport, 'NMI');
+  assert.equal(created.data.trip.pickupTerminal, 'T1');
+  assert.equal((await Trip.findById(created.data.trip.id)).airport, 'NMI'); // stored with the trip
+  const t2 = await u.api('POST', '/trips', tripBody({ pickupLocation: NMI_NAME, pickupTerminal: 'T2', travelDate: date }));
+  assert.equal(t2.error.details[0].message, 'Navi Mumbai Airport (NMI) has only Terminal 1.');
+  // Mumbai Airport still needs its terminal, and is stored as BOM
+  assert.equal((await u.api('POST', '/trips', tripBody({ pickupTerminal: null, travelDate: date }))).error.details[0].field, 'pickupTerminal');
+  assert.equal((await u.api('POST', '/trips', tripBody({ travelDate: date }))).data.trip.airport, 'BOM');
+
+  // Verification: a Mumbai Airport ticket can't verify a Navi Mumbai trip
+  const verify = (document) =>
+    u.api('POST', `/trips/${created.data.trip.id}/verification`, { airline: 'Air India', flightNumber: 'AI123', scheduledArrivalTime: '10:00', document });
+  const wrongAirport = await verify(ticketFor(u, { date, to: 'BOM Mumbai T2' }));
+  assert.equal(wrongAirport.status, 422);
+  assert.match(wrongAirport.error.message, /Your ticket is for Mumbai Airport \(BOM\), but your trip is from Navi Mumbai Airport \(NMI\)/);
+  const ok = await verify(ticketFor(u, { date, to: 'NMI Navi Mumbai T1' }));
+  assert.equal(ok.status, 200, JSON.stringify(ok.error));
+  assert.equal(ok.data.trip.flight.arrivalAirport, 'NMI');
+  assert.equal(ok.data.trip.flight.arrivalTerminal, 'T1');
+  const A = { ...u, id: created.data.trip.id };
+
+  // Matching: same flight and time, but only the Navi Mumbai passenger is offered
+  const nmiB = await passenger({ pickupLocation: NMI_NAME, pickupTerminal: null, travelDate: date, destination: 'CBD Belapur', expectedArrivalTime: '10:05' });
+  const bomC = await passenger({ travelDate: date, destination: 'Kharghar', expectedArrivalTime: '10:00' });
+  const seenByA = (await options(A)).travellers;
+  assert.equal(seenByA.length, 1);
+  assert.equal(seenByA[0].area, 'CBD Belapur');
+  assert.equal((await options(bomC)).travellers.length, 0); // Navi Mumbai passengers are never offered at Mumbai Airport
+
+  // A Navi Mumbai shared ride can't be joined from Mumbai Airport
+  const poolId = (await choose(A, { mode: 'shared', vehicleType: 'suv' })).data.trip.poolId;
+  const nmiPool = await Pool.findById(poolId);
+  assert.deepEqual([nmiPool.pickupKey, nmiPool.pickupAirport], ['NMI-T1', 'NMI']);
+  assert.equal(poolsFor(await options(bomC), 'suv').some((p) => p.id === poolId), false);
+  assert.equal((await choose(bomC, { mode: 'shared', vehicleType: 'suv', poolId })).error.code, 'POOL_INCOMPATIBLE');
+  assert.equal((await choose(nmiB, { mode: 'shared', vehicleType: 'suv', poolId })).data.trip.poolId, poolId);
+  // The fare is measured from Navi Mumbai Airport (Kharghar + Belapur: a short ride)
+  assert.ok((await A.api('GET', `/trips/${A.id}/ride`)).data.ride.pool.fare.roadKm < 20);
+});
+
+test('destinations: listed areas, a typed "Others" destination (kept when editing), "Others"/empty refused; old trips still work', async () => {
+  const u = await newUser();
+  const date = '2027-01-21';
+  for (const destination of ['Colaba', 'Cuffe Parade', 'CST / CSMT', 'Vashi', 'Kharghar']) {
+    const res = await u.api('POST', '/trips', tripBody({ travelDate: date, destination }));
+    assert.equal(res.status, 201, destination);
+    assert.equal(res.data.trip.destination, destination);
+  }
+
+  // "Others": the typed place is saved (spaces tidied), never the word "Others"
+  const typed = await u.api('POST', '/trips', tripBody({ travelDate: date, destination: '  Hiranandani   Estate, Thane West ' }));
+  assert.equal(typed.status, 201);
+  assert.equal(typed.data.trip.destination, 'Hiranandani Estate, Thane West');
+  for (const destination of ['Others', 'others', '   ', '']) {
+    const refused = await u.api('POST', '/trips', tripBody({ travelDate: date, destination }));
+    assert.equal(refused.status, 400, JSON.stringify(destination));
+    assert.deepEqual(refused.error.details.map((d) => [d.field, d.message]), [['destination', 'Enter your destination.']]);
+  }
+  // Editing other details keeps the typed destination; it can be changed to another typed place
+  const id = typed.data.trip.id;
+  assert.equal((await u.api('PATCH', `/trips/${id}`, { passengerCount: 2 })).data.trip.destination, 'Hiranandani Estate, Thane West');
+  assert.equal((await u.api('PATCH', `/trips/${id}`, { destination: 'Lodha Amara, Thane' })).data.trip.destination, 'Lodha Amara, Thane');
+  assert.equal((await u.api('PATCH', `/trips/${id}`, { destination: 'Others' })).status, 400);
+  // Switching the airport on an unverified trip: the old terminal doesn't carry over
+  const moved = await u.api('PATCH', `/trips/${id}`, { pickupLocation: NMI_NAME });
+  assert.equal(moved.status, 200, JSON.stringify(moved.error));
+  assert.deepEqual([moved.data.trip.airport, moved.data.trip.pickupTerminal], ['NMI', 'T1']);
+
+  // A trip saved before airports were added (no airport field): still a Mumbai Airport trip
+  const legacy = await Trip.create({
+    userId: u.userId,
+    pickupLocation: AIRPORT,
+    pickupTerminal: 'T2',
+    destination: 'Navi Mumbai',
+    travelDate: date,
+    expectedArrivalTime: '09:00',
+    arrivalAt: new Date(`${date}T03:30:00Z`),
+    passengerCount: 1,
+    luggageCount: 1,
+  });
+  assert.equal((await Trip.collection.findOne({ _id: legacy._id })).airport, undefined);
+  const read = (await u.api('GET', `/trips/${legacy._id}`)).data.trip;
+  assert.equal(read.airport, 'BOM');
+  assert.equal(read.destination, 'Navi Mumbai'); // the old general option still works
+  const edited = await u.api('PATCH', `/trips/${legacy._id}`, { luggageCount: 2 });
+  assert.equal(edited.status, 200);
+  assert.equal((await Trip.findById(legacy._id)).airport, 'BOM');
+});
+
+// ---- traveller profiles and identity verification ---------------------------------
+const IDENTITY_SECRET = 'integration-identity-secret';
+// The KYC provider's result, signed like a real provider's (HMAC-SHA256 of the raw body)
+async function identityResult(body, { secret = IDENTITY_SECRET, signature } = {}) {
+  const raw = JSON.stringify(body);
+  const res = await fetch(`${base}/identity/webhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Identity-Signature': signature ?? crypto.createHmac('sha256', secret).update(raw).digest('hex') },
+    body: raw,
+  });
+  return { status: res.status, ...(await res.json()) };
+}
+// Runs `fn` with the test-only identity provider switched on, then restores the default (none)
+async function withSandboxIdentity(fn) {
+  const saved = [env.identityProvider, env.identityWebhookSecret];
+  env.identityProvider = 'sandbox';
+  env.identityWebhookSecret = IDENTITY_SECRET;
+  try {
+    return await fn();
+  } finally {
+    [env.identityProvider, env.identityWebhookSecret] = saved;
+  }
+}
+const yearsAgo = (years) => `${Number(new Date().toISOString().slice(0, 4)) - years}-01-15`;
+
+test('profile: own details only, validated on the server; sharing is off until the passenger turns it on', async () => {
+  const u = await newUser();
+  const initial = (await u.api('GET', '/profile')).data.profile;
+  assert.deepEqual(initial.profileSharing, { shareProfile: false, showGender: false });
+  assert.equal(initial.dateOfBirth, null);
+  assert.equal(initial.gender, null);
+  assert.equal(initial.identity.status, 'not_started');
+
+  const saved = await u.api('PATCH', '/profile', { dateOfBirth: yearsAgo(30), gender: 'female', profileSharing: { shareProfile: true } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.error));
+  // Born 15 January, 30 years ago: 30 from 15 January on, 29 before it
+  const now = new Date();
+  assert.equal(saved.data.profile.age, now.getMonth() === 0 && now.getDate() < 15 ? 29 : 30);
+  assert.equal(saved.data.profile.gender, 'female');
+  assert.deepEqual(saved.data.profile.profileSharing, { shareProfile: true, showGender: false });
+
+  // Validation: adults only, real dates, known genders, nothing else settable
+  for (const [body, field] of [
+    [{ dateOfBirth: yearsAgo(15) }, 'dateOfBirth'],
+    [{ dateOfBirth: '2001-02-30' }, 'dateOfBirth'],
+    [{ dateOfBirth: yearsAgo(120) }, 'dateOfBirth'],
+    [{ gender: 'robot' }, 'gender'],
+    [{ name: 'A' }, 'name'],
+    [{ email: 'x@y.z' }, ''],
+    [{ profileSharing: { shareProfile: 'yes' } }, 'profileSharing.shareProfile'],
+  ]) {
+    const res = await u.api('PATCH', '/profile', body);
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.equal(res.error.details[0].field, field, JSON.stringify(body));
+  }
+  // Gender can't be shown without the profile being shared; turning sharing off hides it again
+  await u.api('PATCH', '/profile', { profileSharing: { showGender: true } });
+  const off = (await u.api('PATCH', '/profile', { profileSharing: { shareProfile: false } })).data.profile;
+  assert.deepEqual(off.profileSharing, { shareProfile: false, showGender: false });
+  // Gender is optional: it can be removed
+  assert.equal((await u.api('PATCH', '/profile', { gender: null })).data.profile.gender, null);
+  assert.equal((await fetch(`${base}/profile`)).status, 401);
+});
+
+test('identity: without a provider nothing can be verified; with one, pending -> verified / rejected -> retry, own status only', async () => {
+  const u = await newUser();
+  // No provider configured (the default): clearly unavailable, never "verified"
+  const none = (await u.api('GET', '/identity')).data.identity;
+  assert.deepEqual([none.status, none.available, none.canStart], ['not_started', false, false]);
+  const refused = await u.api('POST', '/identity/start', { method: 'passport', consent: true });
+  assert.equal(refused.status, 503);
+  assert.equal(refused.error.code, 'IDENTITY_UNAVAILABLE');
+  assert.equal(await IdentityVerification.countDocuments({ userId: u.userId }), 0);
+
+  await withSandboxIdentity(async () => {
+    // Consent is required, explicitly
+    assert.equal((await u.api('POST', '/identity/start', { method: 'passport' })).status, 400);
+    assert.equal((await u.api('POST', '/identity/start', { method: 'passport', consent: 'yes' })).status, 400);
+    // Documents are never accepted here
+    assert.equal((await u.api('POST', '/identity/start', { method: 'passport', consent: true, documentNumber: 'P1234567' })).error.code, 'VALIDATION_ERROR');
+
+    const started = await u.api('POST', '/identity/start', { method: 'aadhaar', consent: true });
+    assert.equal(started.status, 202);
+    assert.equal(started.data.identity.status, 'pending');
+    const again = await u.api('POST', '/identity/start', { method: 'aadhaar', consent: true });
+    assert.equal(again.data.identity.status, 'pending'); // still the same session
+    const record = await IdentityVerification.findOne({ userId: u.userId }).lean();
+    assert.deepEqual(Object.keys(record).sort(), ['__v', '_id', 'attempts', 'consent', 'createdAt', 'method', 'provider', 'providerReference', 'startedAt', 'status', 'updatedAt', 'userId']);
+    assert.equal(record.consent.version, '2026-11-identity-v1');
+
+    // The provider's result: forged or unsigned results change nothing
+    assert.equal((await identityResult({ reference: record.providerReference, status: 'verified' }, { secret: 'wrong' })).status, 401);
+    assert.equal((await u.api('GET', '/identity')).data.identity.status, 'pending');
+    // A genuine result, with extra fields the provider might send - none of them are kept
+    const ok = await identityResult({ reference: record.providerReference, status: 'verified', name: 'Test User', aadhaar: '1234 5678 9012', dob: '1990-01-01' });
+    assert.equal(ok.data.applied, true);
+    const verified = (await u.api('GET', '/identity')).data.identity;
+    assert.deepEqual([verified.status, verified.canStart], ['verified', false]);
+    const stored = JSON.stringify(await IdentityVerification.findOne({ userId: u.userId }).lean());
+    for (const secret of ['1234 5678 9012', '1990-01-01', 'Test User']) assert.equal(stored.includes(secret), false, secret);
+    assert.equal((await u.api('POST', '/identity/start', { method: 'aadhaar', consent: true })).error.code, 'ALREADY_VERIFIED');
+    // Repeating or reversing the result changes nothing
+    assert.equal((await identityResult({ reference: record.providerReference, status: 'rejected' })).data.applied, false);
+
+    // Rejected -> retry -> verified
+    const r = await newUser();
+    await r.api('POST', '/identity/start', { method: 'passport', consent: true });
+    const rRef = (await IdentityVerification.findOne({ userId: r.userId })).providerReference;
+    await identityResult({ reference: rRef, status: 'rejected', reason: 'document_unreadable' });
+    const rejected = (await r.api('GET', '/identity')).data.identity;
+    assert.deepEqual([rejected.status, rejected.rejectedReason, rejected.canStart], ['rejected', 'document_unreadable', true]);
+    const retry = await r.api('POST', '/identity/start', { method: 'driving_licence', consent: true });
+    assert.deepEqual([retry.data.identity.status, retry.data.identity.attempts], ['pending', 2]);
+    const rRef2 = (await IdentityVerification.findOne({ userId: r.userId })).providerReference;
+    assert.notEqual(rRef2, rRef);
+    await identityResult({ reference: rRef2, status: 'verified' });
+    assert.equal((await r.api('GET', '/identity')).data.identity.status, 'verified');
+
+    // Nobody can read another passenger's identity record or documents
+    const stranger = await newUser();
+    assert.equal((await stranger.api('GET', '/identity')).data.identity.status, 'not_started'); // only their own
+    for (const path of [`/identity/${u.userId}`, `/identity/${record.providerReference}`, '/identity/documents', `/profile/${u.userId}`]) {
+      assert.equal((await stranger.api('GET', path)).status, 404, path);
+    }
+  });
+
+  // Deleting the account deletes its identity result
+  const gone = await newUser();
+  await withSandboxIdentity(() => gone.api('POST', '/identity/start', { method: 'passport', consent: true }));
+  assert.equal((await gone.api('DELETE', '/auth/me', { password: 'secret123' })).status, 200);
+  assert.equal(await IdentityVerification.countDocuments({ userId: gone.userId }), 0);
+});
+
+test('traveller cards: name and age only with consent, gender only if chosen, identity status; booking shows them to its own passengers only', async () => {
+  const date = '2027-01-25';
+  const A = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '12:00' });
+  const B = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '12:05' });
+  const C = await passenger({ travelDate: date, destination: 'Colaba', expectedArrivalTime: '20:00' }); // not compatible
+  const card = async () => (await options(A)).travellers[0];
+
+  // B hasn't consented: nothing personal is shown
+  await B.api('PATCH', '/profile', { dateOfBirth: yearsAgo(41), gender: 'male' });
+  assert.deepEqual((await card()).profile, { shared: false });
+
+  // B shares name + age, not gender
+  await B.api('PATCH', '/profile', { profileSharing: { shareProfile: true } });
+  let profile = (await card()).profile;
+  assert.equal(profile.shared, true);
+  assert.equal(profile.name, `Test ${B.name.split(' ').at(-1)[0]}.`); // first name + last initial ("Test User 7" -> "Test 7.")
+  assert.equal(JSON.stringify(profile).includes(B.name), false); // never the full name
+  assert.ok([40, 41].includes(profile.age));
+  assert.equal(profile.gender, null);
+  assert.equal(profile.identity, 'not_verified');
+  // ...then gender too, and a genuinely verified identity
+  await B.api('PATCH', '/profile', { profileSharing: { showGender: true } });
+  await withSandboxIdentity(async () => {
+    await B.api('POST', '/identity/start', { method: 'passport', consent: true });
+    await identityResult({ reference: (await IdentityVerification.findOne({ userId: B.userId })).providerReference, status: 'verified' });
+  });
+  profile = (await card()).profile;
+  assert.equal(profile.gender, 'male');
+  assert.equal(profile.identity, 'verified');
+
+  // Never in any response: date of birth, email, phone, user id, identity details
+  const everything = JSON.stringify(await A.api('GET', `/trips/${A.id}/matches`));
+  for (const secret of [yearsAgo(41), B.email, B.userId, 'providerReference', 'sandbox_', 'passport']) {
+    assert.equal(everything.includes(secret), false, secret);
+  }
+
+  // Unrelated passengers and strangers see nothing of B
+  assert.equal((await options(C)).travellers.length, 0);
+  const stranger = await newUser();
+  assert.equal((await stranger.api('GET', `/trips/${A.id}/matches`)).status, 404);
+
+  // Shared ride: profiles visible before confirming (pool card) and in the booking, as B currently shares them
+  const poolId = (await choose(B, { mode: 'shared', vehicleType: 'suv' })).data.trip.poolId;
+  const joinable = poolsFor(await options(A), 'suv').find((p) => p.id === poolId);
+  assert.equal(joinable.others[0].profile.name, profile.name);
+  await choose(A, { mode: 'shared', vehicleType: 'suv', poolId });
+  await A.api('POST', `/trips/${A.id}/booking`, {});
+  await B.api('POST', `/trips/${B.id}/booking`, {});
+  const manage = (await A.api('GET', `/trips/${A.id}/booking`)).data;
+  assert.equal(manage.ride.pool.others[0].profile.name, profile.name);
+  assert.equal(manage.ride.pool.others[0].profile.identity, 'verified');
+  assert.equal(manage.booking.travellers[0].profile, undefined); // the stored booking never copies profiles
+  assert.equal((await Trip.findById(A.id)).toObject().booking.travellers.some((t) => 'profile' in t), false);
+  // A sharing nothing: B sees A as "not shared"
+  assert.deepEqual((await B.api('GET', `/trips/${B.id}/booking`)).data.ride.pool.others[0].profile, { shared: false });
+  // B turns sharing off: it disappears from A's booking at once
+  await B.api('PATCH', '/profile', { profileSharing: { shareProfile: false } });
+  assert.deepEqual((await A.api('GET', `/trips/${A.id}/booking`)).data.ride.pool.others[0].profile, { shared: false });
+  // Only the booking's own passengers can read it
+  for (const outsider of [C, stranger]) assert.equal((await outsider.api('GET', `/trips/${A.id}/booking`)).status, 404);
+});
+
+// ---- live pooling: several passengers at once ------------------------------------
+const live = (p) => p.api('GET', `/trips/${p.id}/live`);
+const considering = async (p) => (await live(p)).data.activity.othersConsidering;
+
+test('live: "also booking" counts only other compatible passengers on the ride screens, and expire', async () => {
+  const date = '2027-02-01';
+  const A = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '09:00' });
+  const B = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '09:05' });
+  const C = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '09:10' });
+  const otherTerminal = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '09:00', pickupTerminal: 'T1' });
+  const otherPlace = await passenger({ travelDate: date, destination: 'Somewhere Typed In', expectedArrivalTime: '09:00' });
+
+  // 1-3. A and B are on the screen: each sees the OTHER, never themselves
+  assert.equal(await considering(A), 0);
+  assert.equal(await considering(B), 1);
+  assert.equal(await considering(A), 1);
+  // 4. C arrives: both counts go up
+  assert.equal(await considering(C), 2);
+  assert.equal(await considering(A), 2);
+  // Incompatible passengers (other terminal, a typed destination elsewhere) neither count nor see the others
+  assert.equal(await considering(otherTerminal), 0);
+  assert.equal(await considering(otherPlace), 0);
+  assert.equal(await considering(A), 2);
+  // One record per trip, however often (or simultaneously) it checks
+  await Promise.all([live(A), live(A), live(A), live(A)]);
+  assert.equal(await RideIntent.countDocuments({ tripId: A.id }), 1);
+
+  // 5. B leaves the screen: gone at once. C stops checking: gone when the intent expires
+  assert.equal((await B.api('DELETE', `/trips/${B.id}/live`)).status, 200);
+  assert.equal(await considering(A), 1);
+  await RideIntent.updateOne({ tripId: C.id }, { $set: { expiresAt: new Date(Date.now() - 1000) } }); // = 30 s without a check
+  assert.equal(await considering(A), 0);
+  assert.equal(await considering(C), 1); // C checks again: back, and sees A
+
+  // Booking or cancelling stops counting at once
+  await choose(C, { mode: 'solo', vehicleType: 'sedan' });
+  await C.api('POST', `/trips/${C.id}/booking`, {});
+  assert.equal(await considering(A), 0);
+  assert.equal(await RideIntent.countDocuments({ tripId: C.id }), 0);
+  assert.equal(await considering(B), 1); // B came back
+  await B.api('PATCH', `/trips/${B.id}`, { status: 'cancelled' });
+  assert.equal(await considering(A), 0);
+
+  // Only a number - never who; only for your own trip; login required
+  const body = JSON.stringify(await live(A));
+  for (const secret of [B.userId, C.userId, B.email, B.id, C.id]) assert.equal(body.includes(secret), false, secret);
+  const stranger = await newUser();
+  assert.equal((await stranger.api('GET', `/trips/${A.id}/live`)).status, 404);
+  assert.equal((await stranger.api('DELETE', `/trips/${A.id}/live`)).status, 404);
+  assert.equal((await fetch(`${base}/trips/${A.id}/live`)).status, 401);
+});
+
+test('live: a new shared ride appears for compatible passengers (and notifies them); seats and "full" come from the database', async () => {
+  const date = '2027-02-02';
+  const A = await passenger({ travelDate: date, destination: 'Powai', expectedArrivalTime: '15:00' });
+  const B = await passenger({ travelDate: date, destination: 'Powai', expectedArrivalTime: '15:05' });
+  const C = await passenger({ travelDate: date, destination: 'Powai', expectedArrivalTime: '15:10', passengerCount: 2 });
+  const E = await passenger({ travelDate: date, destination: 'Powai', expectedArrivalTime: '15:15' });
+  const D = await passenger({ travelDate: date, destination: 'Colaba', expectedArrivalTime: '15:00' }); // not on the way
+  assert.deepEqual((await live(B)).data.pools, []);
+
+  // 6. A starts a shared sedan
+  const started = await choose(A, { mode: 'shared', vehicleType: 'sedan' });
+  assert.equal(started.data.outcome, 'created');
+  const poolId = started.data.trip.poolId;
+
+  // 7. B and C see it on their next check - with seats from the database; D doesn't
+  const seenByB = (await live(B)).data.pools;
+  assert.deepEqual(seenByB.map((p) => [p.id, p.seatsLeft, p.bookings, p.full]), [[poolId, 3, 1, false]]);
+  assert.equal((await live(C)).data.pools[0].id, poolId);
+  assert.deepEqual((await live(D)).data.pools, []);
+  // ...and are told in-app (A, the creator, and D, incompatible, are not)
+  for (const [p, expected] of [[B, 1], [C, 1], [A, 0], [D, 0]]) {
+    assert.equal(await Notification.countDocuments({ userId: p.userId, type: 'pool_created' }), expected);
+  }
+  // 13. D can't join it either
+  assert.equal((await choose(D, { mode: 'shared', vehicleType: 'sedan', poolId })).error.code, 'POOL_INCOMPATIBLE');
+
+  // 8-9. B joins: everyone's numbers update
+  assert.equal((await choose(B, { mode: 'shared', vehicleType: 'sedan', poolId })).data.outcome, 'joined');
+  assert.deepEqual([(await live(A)).data.myPool.bookings, (await live(A)).data.myPool.seatsLeft], [2, 2]);
+  assert.equal((await live(C)).data.pools[0].seatsLeft, 2);
+  // 10. C (a group of 2) takes the last seats: full; nobody else can join, and it's no longer offered
+  await choose(C, { mode: 'shared', vehicleType: 'sedan', poolId });
+  const mine = (await live(A)).data.myPool;
+  assert.deepEqual([mine.seatsLeft, mine.full], [0, true]);
+  assert.deepEqual((await live(E)).data.pools, []);
+  assert.equal((await choose(E, { mode: 'shared', vehicleType: 'sedan', poolId })).error.code, 'POOL_FULL');
+  const pool = await Pool.findById(poolId);
+  assert.equal(pool.seatsTaken, 4);
+  assert.equal(pool.members.length, 3);
+  // The count can't be set by the app: unknown fields are refused
+  assert.equal((await choose(E, { mode: 'shared', vehicleType: 'sedan', poolId, seatsLeft: 9 })).status, 400);
+});
+
+test('live: two passengers starting a shared ride at the same moment end up in ONE ride; the last seat goes to one only', async () => {
+  // 11. Simultaneous "start a shared ride" by compatible passengers
+  for (let round = 0; round < 3; round++) {
+    const date = `2027-02-1${round}`;
+    const F = await passenger({ travelDate: date, destination: 'Andheri West', expectedArrivalTime: '11:00' });
+    const G = await passenger({ travelDate: date, destination: 'Andheri West', expectedArrivalTime: '11:05' });
+    const [f, g] = await Promise.all([
+      choose(F, { mode: 'shared', vehicleType: 'suv' }),
+      choose(G, { mode: 'shared', vehicleType: 'suv' }),
+    ]);
+    assert.equal(f.status, 200, JSON.stringify(f.error));
+    assert.equal(g.status, 200, JSON.stringify(g.error));
+    assert.equal(f.data.trip.poolId, g.data.trip.poolId, `round ${round}: one shared ride`);
+    assert.deepEqual([f.data.outcome, g.data.outcome].sort(), ['created', 'joined_existing']);
+    const pools = await Pool.find({ 'members.tripId': { $in: [F.id, G.id] } });
+    assert.equal(pools.length, 1);
+    assert.equal(pools[0].seatsTaken, 2);
+  }
+
+  // 12. One seat left, two passengers take it at the same moment
+  const date = '2027-02-20';
+  const host = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '07:00', passengerCount: 3 });
+  const poolId = (await choose(host, { mode: 'shared', vehicleType: 'sedan' })).data.trip.poolId; // 3 of 4 seats taken
+  const H = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '07:05' });
+  const I = await passenger({ travelDate: date, destination: 'Juhu', expectedArrivalTime: '07:10' });
+  const results = await Promise.all([choose(H, { mode: 'shared', vehicleType: 'sedan', poolId }), choose(I, { mode: 'shared', vehicleType: 'sedan', poolId })]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+  assert.ok(['POOL_FULL', 'POOL_CHANGED'].includes(results.find((r) => r.status === 409).error.code));
+  const pool = await Pool.findById(poolId);
+  assert.deepEqual([pool.seatsTaken, pool.members.length], [4, 2]);
+
+  // 15. A lost response is retried: still one booking, one reference
+  const loser = results.find((r) => r.status === 409) === results[0] ? H : I;
+  const winner = loser === H ? I : H;
+  const [b1, b2] = [await winner.api('POST', `/trips/${winner.id}/booking`, {}), await winner.api('POST', `/trips/${winner.id}/booking`, {})];
+  assert.equal(b1.data.booking.reference, b2.data.booking.reference);
+  assert.equal(await Trip.countDocuments({ _id: winner.id, 'booking.status': 'confirmed' }), 1);
 });
 
 // ---- 7. data consistency after everything above ------------------------------------

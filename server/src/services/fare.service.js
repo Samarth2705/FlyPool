@@ -11,10 +11,11 @@ export const FARE_SOURCE = 'flypool-pricing-rules';
 // nearest drop-off not visited yet.
 // stops: [{ key, point }]. Returns the stops in order with the straight-line
 // km driven from the airport until each drop (`atKm`), plus the total.
-export function planRoute(stops) {
+// origin: the airport the cab starts from (default: Mumbai Airport)
+export function planRoute(stops, origin = AIRPORT.point) {
   const remaining = [...stops];
   const order = [];
-  let position = AIRPORT.point;
+  let position = origin;
   let totalKm = 0;
 
   while (remaining.length > 0) {
@@ -73,10 +74,10 @@ export function fareBreakdown(vehicle, roadKm, total) {
   };
 }
 
-export function estimateRideFare(vehicle, members) {
+export function estimateRideFare(vehicle, members, origin = AIRPORT.point) {
   if (members.length === 0 || members.some((m) => !m.point)) return null;
 
-  const route = planRoute(members.map((m) => ({ key: m.key, point: m.point })));
+  const route = planRoute(members.map((m) => ({ key: m.key, point: m.point })), origin);
   const roadKm = route.totalKm * ROAD_DISTANCE_FACTOR;
   const total = estimateTotalFare(vehicle, roadKm);
   const people = members.reduce((sum, m) => sum + m.partySize, 0);

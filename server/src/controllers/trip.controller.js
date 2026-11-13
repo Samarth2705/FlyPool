@@ -62,9 +62,23 @@ export async function getRide(req, res) {
 
 // PUT /api/trips/:tripId/ride - Page 4 -> 5: Shared Ride / Travel Alone + vehicle
 export async function chooseRide(req, res) {
-  await rideService.chooseRide(req.params.tripId, req.userId, req.body);
+  const chosen = await rideService.chooseRide(req.params.tripId, req.userId, req.body);
   const { trip, ride } = await rideService.getRide(req.params.tripId, req.userId);
-  res.json({ success: true, data: { trip, ride } });
+  // 'created' | 'joined_existing' (a compatible shared ride already existed) | 'joined' | null
+  res.json({ success: true, data: { trip, ride, outcome: chosen?.$locals?.rideOutcome ?? null } });
+}
+
+// GET /api/trips/:tripId/live - checked every few seconds by the ride screens:
+// how many compatible passengers are choosing now, the shared rides this trip
+// can join and its own shared ride - all from the database
+export async function getLiveRide(req, res) {
+  res.json({ success: true, data: await rideService.getLiveRide(req.params.tripId, req.userId) });
+}
+
+// DELETE /api/trips/:tripId/live - the passenger left the ride screens
+export async function leaveLiveRide(req, res) {
+  await rideService.leaveLiveRide(req.params.tripId, req.userId);
+  res.json({ success: true, data: null });
 }
 
 // POST /api/trips/:tripId/booking - confirm the booking of the chosen ride.

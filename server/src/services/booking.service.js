@@ -26,6 +26,7 @@ import { MATCHING } from '../config/pricing.js';
 import { AppError } from '../utils/AppError.js';
 import * as rideService from './ride.service.js';
 import { notifyBookingConfirmed, quietly } from './notification.service.js';
+import { endIntent } from './intent.service.js';
 
 // "FP-" + 8 characters without look-alikes (no 0/O, 1/I)
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -97,7 +98,9 @@ export async function confirmBooking(tripId, userId, expected = {}) {
     vehicle: ride.vehicle,
     poolId: ride.pool?.id ?? null,
     partySize: trip.passengerCount,
-    travellers: ride.mode === 'shared' ? ride.pool.others : [],
+    // Public ride facts only. Profiles are NOT copied into the booking: they're
+    // shown live, as each passenger currently chooses to share (getRide)
+    travellers: ride.mode === 'shared' ? ride.pool.others.map(({ profile, ...facts }) => facts) : [],
     fare: fare ?? null,
   };
 
@@ -126,6 +129,7 @@ export async function confirmBooking(tripId, userId, expected = {}) {
     throw new AppError(409, 'BOOKING_CONFLICT', 'Your ride changed while confirming. Please review the summary and try again.');
   }
 
+  await endIntent(updated._id); // booked: no longer "also booking" for others
   await quietly('booking_confirmed', () => notifyBookingConfirmed(updated, updated.booking));
   const fresh = await rideService.getRide(tripId, userId);
   return { ...fresh, booking: updated.booking, created: true };

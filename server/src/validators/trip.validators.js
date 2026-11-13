@@ -2,7 +2,10 @@
 // The same rules (and messages) are used in client/src/utils/tripValidation.js.
 import { z } from 'zod';
 import { parseFlightNumber } from '../data/airlines.js';
+import { airportByName } from '../data/mumbaiAreas.js';
 
+// The airports are listed in data/mumbaiAreas.js (AIRPORTS); a trip's
+// pickupLocation is an airport's full name or any other pickup point.
 export const MUMBAI_AIRPORT = 'Chhatrapati Shivaji Maharaj International Airport, Mumbai';
 export const MAX_PASSENGERS = 6;
 export const MAX_LUGGAGE = 10;
@@ -107,11 +110,18 @@ const tripDetailsFields = {
     .min(3, 'Enter a pickup location.')
     .max(120, 'Pickup location is too long.'),
   pickupTerminal: z.enum(['T1', 'T2'], { error: 'Choose Terminal 1 or Terminal 2.' }).nullable().default(null),
+  // A listed area or, under "Others", what the passenger typed - never "Others" itself
   destination: z
     .string({ error: 'Destination is required.' })
     .trim()
-    .min(2, 'Enter your destination.')
-    .max(120, 'Destination is too long.'),
+    .transform((value) => value.replace(/\s+/g, ' '))
+    .pipe(
+      z
+        .string()
+        .min(2, 'Enter your destination.')
+        .max(120, 'Destination is too long.')
+        .refine((value) => !/^others?$/i.test(value), 'Enter your destination.'),
+    ),
   travelDate: z
     .string({ error: 'Travel date is required.' })
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Choose a valid travel date.')
@@ -131,8 +141,11 @@ function checkTripRules(trip, ctx) {
     ctx.addIssue({ code: 'custom', path: ['destination'], message: 'Destination must be different from the pickup location.' });
   }
 
-  if (trip.pickupLocation === MUMBAI_AIRPORT && !trip.pickupTerminal) {
+  const airport = airportByName(trip.pickupLocation);
+  if (airport && !trip.pickupTerminal) {
     ctx.addIssue({ code: 'custom', path: ['pickupTerminal'], message: 'Choose Terminal 1 or Terminal 2.' });
+  } else if (airport && !airport.terminals.includes(trip.pickupTerminal)) {
+    ctx.addIssue({ code: 'custom', path: ['pickupTerminal'], message: `${airport.shortName} has ${airport.terminals.length === 1 ? 'only Terminal 1' : 'Terminals 1 and 2'}.` });
   }
 
   const today = todayInMumbai();
@@ -143,14 +156,23 @@ function checkTripRules(trip, ctx) {
   }
 }
 
+// The airport's code is stored with the trip (trip.airport: "BOM" / "NMI", null
+// for other pickups). An airport with one terminal needs no choice.
+function withAirport(trip) {
+  const airport = airportByName(trip.pickupLocation);
+  const onlyTerminal = airport?.terminals.length === 1 ? airport.terminals[0] : null;
+  return { ...trip, airport: airport?.code ?? null, pickupTerminal: trip.pickupTerminal ?? onlyTerminal };
+}
+
 // A complete, consistent set of trip details
-export const tripDetailsSchema = z.object(tripDetailsFields).superRefine(checkTripRules);
+export const tripDetailsSchema = z.object(tripDetailsFields).transform(withAirport).superRefine(checkTripRules);
 
 // POST /api/trips. clientRequestId is a random id the page creates once per
 // form, so a repeated click or network retry returns the same trip instead
 // of creating a duplicate.
 export const createTripSchema = z
   .object({ ...tripDetailsFields, clientRequestId: z.uuid('Invalid request id.').optional() })
+  .transform(withAirport)
   .superRefine(checkTripRules);
 
 // PATCH /api/trips/:tripId - either edit some trip details (before the

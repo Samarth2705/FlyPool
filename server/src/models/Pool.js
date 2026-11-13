@@ -46,7 +46,7 @@ const poolSchema = new Schema(
 
     // Pickup: airport + terminal, e.g. "BOM-T2". Drop-offs are the members' destinations.
     pickupKey: { type: String, required: true },
-    pickupAirport: { type: String, default: 'BOM' },
+    pickupAirport: { type: String, default: 'BOM' }, // the airport's code: BOM (Mumbai) or NMI (Navi Mumbai)
     pickupTerminal: { type: String, default: null },
     travelDate: { type: String, required: true },
 

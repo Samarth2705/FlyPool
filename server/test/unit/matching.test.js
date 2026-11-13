@@ -8,6 +8,7 @@ import {
   routeIsFair,
   whyPoolRejects,
   normalizeFlightNumber,
+  estimateForMembers,
 } from '../../src/services/matching.service.js';
 import { AIRPORT } from '../../src/data/mumbaiAreas.js';
 import { vehicleByType, MATCHING } from '../../src/config/pricing.js';
@@ -125,4 +126,68 @@ test('unknown destinations only match the exact same text', () => {
   const me = trip({ destination: 'Some Hotel Road' });
   assert.ok(isCompatible(me, trip({ destination: 'some hotel road' })));
   assert.ok(!isCompatible(me, trip({ destination: 'Other Place' })));
+});
+
+// ---- airports: Mumbai (BOM) and Navi Mumbai (NMI) --------------------------------------
+const NMI = 'Navi Mumbai International Airport';
+
+test('passengers at different airports are never matched, even on the same flight, time and destination', () => {
+  const atBom = trip({ destination: 'Vashi', terminal: 'T2' });
+  const atNmi = trip({ destination: 'Vashi', pickup: NMI, terminal: 'T1' });
+  assert.equal(atBom.airport, 'BOM');
+  assert.equal(atNmi.airport, 'NMI');
+  assert.equal(isCompatible(atBom, atNmi), false);
+  assert.equal(isCompatible(atNmi, atBom), false);
+  // ...also when the terminals happen to be called the same
+  assert.equal(isCompatible(trip({ destination: 'Vashi', terminal: 'T1' }), atNmi), false);
+  assert.deepEqual(findCompatibleTrips(atNmi, [atBom]), []);
+  // and a Mumbai Airport pool never takes a Navi Mumbai passenger
+  assert.equal(whyPoolRejects(pool('suv', [atBom]), atNmi), 'incompatible');
+});
+
+test('passengers at Navi Mumbai Airport match each other; Navi Mumbai areas are on the way', () => {
+  const a = trip({ destination: 'Kharghar', pickup: NMI, terminal: 'T1' });
+  const b = trip({ destination: 'CBD Belapur', pickup: NMI, terminal: 'T1', minutes: 10 });
+  assert.equal(a.pickupKey, 'NMI-T1');
+  assert.equal(isCompatible(a, b), true);
+  assert.equal(isCompatible(a, trip({ destination: 'Colaba', pickup: NMI, terminal: 'T1' })), false); // opposite direction
+});
+
+test('routes start at the trip’s own airport: Kharghar is closer to Navi Mumbai Airport', () => {
+  const v = vehicleByType('sedan');
+  const fromNmi = estimateForMembers(v, [trip({ destination: 'Kharghar', pickup: NMI, terminal: 'T1' })]);
+  const fromBom = estimateForMembers(v, [trip({ destination: 'Kharghar' })]);
+  assert.ok(fromNmi.roadKm < fromBom.roadKm, `${fromNmi.roadKm} km vs ${fromBom.roadKm} km`);
+});
+
+test('every new area is known, so nearby destinations can match', () => {
+  for (const area of ['Colaba', 'Cuffe Parade', 'Fort', 'CST / CSMT', 'Churchgate', 'Marine Lines', 'Dadar', 'Bandra', 'Andheri', 'Powai', 'Ghatkopar',
+    'Vashi', 'Sanpada', 'Juinagar', 'Nerul', 'Seawoods', 'CBD Belapur', 'Kharghar', 'Kamothe', 'Kalamboli', 'Panvel', 'Ulwe', 'Airoli', 'Ghansoli', 'Kopar Khairane', 'Turbhe', 'Taloja']) {
+    assert.equal(trip({ destination: area }).area?.name, area, area);
+  }
+  // South Mumbai neighbours share a cab
+  assert.equal(isCompatible(trip({ destination: 'Cuffe Parade' }), trip({ destination: 'Colaba' })), true);
+  assert.equal(isCompatible(trip({ destination: 'CST / CSMT' }), trip({ destination: 'Fort' })), true);
+});
+
+test('typed ("Others") destinations: same place matches, different places never just because both were typed', () => {
+  const a = trip({ destination: '  Hiranandani   Estate ' });
+  const b = trip({ destination: 'hiranandani estate' });
+  const c = trip({ destination: 'Lodha Amara' });
+  assert.equal(a.area, null);
+  assert.equal(isCompatible(a, b), true); // the same text once normalised
+  assert.equal(isCompatible(a, c), false);
+  // A typed place naming a known area is matched by that area
+  assert.equal(trip({ destination: 'Sector 20, Kharghar' }).area.name, 'Kharghar');
+  assert.equal(isCompatible(trip({ destination: 'Sector 20, Kharghar' }), trip({ destination: 'Kharghar' })), true);
+});
+
+test('trips saved before airports were added are Mumbai Airport trips', () => {
+  const legacy = describeTrip({
+    _id: 'legacy', userId: 'u-legacy', pickupLocation: AIRPORT.name, pickupTerminal: 'T2', destination: 'Powai',
+    arrivalAt: new Date(BASE_TIME), passengerCount: 1, luggageCount: 1, openToPooling: true, flight: { flightNumber: 'AI123' },
+  }); // no `airport` field
+  assert.equal(legacy.airport, 'BOM');
+  assert.equal(legacy.pickupKey, 'BOM-T2'); // the key existing pools use
+  assert.equal(isCompatible(legacy, trip({ destination: 'Powai' })), true);
 });

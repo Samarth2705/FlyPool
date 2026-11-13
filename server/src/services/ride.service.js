@@ -10,6 +10,9 @@ import mongoose from 'mongoose';
 import { Trip } from '../models/Trip.js';
 import { Pool } from '../models/Pool.js';
 import { AppError } from '../utils/AppError.js';
+import { publicProfiles } from './profile.service.js';
+import { PoolLock } from '../models/PoolLock.js';
+import { countOthersConsidering, endIntent, renewIntent } from './intent.service.js';
 import { env } from '../config/env.js';
 import { VEHICLES, vehicleByType, MATCHING } from '../config/pricing.js';
 import { FARE_ASSUMPTIONS } from './fare.service.js';
@@ -18,6 +21,7 @@ import {
   notifyBookingCancelled,
   notifyLeftSharedRide,
   notifyPoolJoined,
+  notifyPoolCreated,
   notifyPoolLeft,
   quietly,
 } from './notification.service.js';
@@ -87,10 +91,13 @@ function soloEstimate(vehicle, me) {
 
 // ---- what the browser may see ------------------------------------------------
 
-// Other members are described by area, group size, flight and arrival time
-// only - no names, contact details, trip ids or exact addresses.
-function publicMember(m, me) {
+// Other members are described by area, group size, flight and arrival time -
+// no contact details, trip ids or exact addresses. With `profiles` (from
+// profile.service.js publicProfiles), each also gets the profile that traveller
+// chose to share: { shared: false } unless they turned sharing on.
+function publicMember(m, me, profiles = null) {
   return {
+    ...(profiles ? { profile: profiles.get(String(m.userId)) ?? { shared: false } } : {}),
     area: m.area?.name ?? null, // null = same (unlisted) destination as yours
     partySize: m.partySize,
     flightNumber: m.flightNumber,
@@ -101,7 +108,7 @@ function publicMember(m, me) {
 }
 
 // A pool as seen by `me`. joining=true: the estimate assumes `me` joins.
-function publicPool(pool, me, { joining }) {
+function publicPool(pool, me, { joining }, profiles = null) {
   const vehicle = vehicleByType(pool.vehicleType);
   const members = describePool(pool).members;
   const riders = joining ? [...members, me] : members;
@@ -118,8 +125,11 @@ function publicPool(pool, me, { joining }) {
     seatsTaken: pool.seatsTaken,
     bagsTaken: pool.bagsTaken,
     seatsLeft: pool.seats - pool.seatsTaken,
+    bagsLeft: pool.bags - pool.bagsTaken,
+    full: pool.seatsTaken >= pool.seats || pool.bagsTaken >= pool.bags,
+    createdAt: pool.createdAt ?? null,
     bookings: pool.members.length,
-    others: members.filter((m) => m.id !== me.id).map((m) => publicMember(m, me)),
+    others: members.filter((m) => m.id !== me.id).map((m) => publicMember(m, me, profiles)),
     fare: estimate && {
       currency: estimate.currency,
       total: estimate.total,
@@ -135,14 +145,14 @@ function publicPool(pool, me, { joining }) {
 }
 
 // The passenger's saved ride choice, for Pages 4 and 5 and My Trips
-function publicRide(trip, pool, me) {
+function publicRide(trip, pool, me, profiles = null) {
   if (!trip.rideMode) return null;
   const vehicle = vehicleByType(trip.vehicleType);
   return {
     mode: trip.rideMode,
     vehicleType: trip.vehicleType,
     vehicle: vehicle && { type: vehicle.type, label: vehicle.label, seats: vehicle.seats, bags: vehicle.bags },
-    pool: trip.rideMode === 'shared' && pool ? publicPool(pool, me, { joining: false }) : null,
+    pool: trip.rideMode === 'shared' && pool ? publicPool(pool, me, { joining: false }, profiles) : null,
     soloFare: trip.rideMode === 'solo' ? trip.soloFareEstimate : null,
     status: trip.rideMode === 'shared' ? (pool?.status ?? 'open') : 'requested',
   };
@@ -170,6 +180,7 @@ export async function getRideOptions(tripId, userId) {
 
   let travellers = [];
   let joinable = [];
+  let profiles = new Map();
   if (!reason) {
     const from = new Date(me.arrivalAt - windowMs());
     const to = new Date(me.arrivalAt + windowMs());
@@ -192,21 +203,28 @@ export async function getRideOptions(tripId, userId) {
     ]);
 
     const poolById = new Map(pools.map((p) => [String(p._id), p]));
-    travellers = findCompatibleTrips(me, otherTrips.map(describeTrip)).map((t, i) => {
+    const compatible = findCompatibleTrips(me, otherTrips.map(describeTrip));
+    joinable = pools.filter((p) => String(p._id) !== String(trip.poolId) && !whyPoolRejects(describePool(p), me));
+    profiles = await publicProfiles([
+      ...compatible.map((t) => t.userId),
+      ...[...joinable, ...(myPool ? [myPool] : [])].flatMap((p) => p.members.map((m) => m.userId)),
+    ]);
+    travellers = compatible.map((t, i) => {
       const theirPool = t.poolId ? poolById.get(t.poolId) : null;
       return {
         ref: `traveller-${i + 1}`,
-        ...publicMember(t, me),
+        ...publicMember(t, me, profiles),
         ride: t.rideMode === 'shared' ? { mode: 'shared', vehicleType: theirPool?.vehicleType ?? null } : null,
         inYourPool: Boolean(trip.poolId && t.poolId === String(trip.poolId)),
       };
     });
-    joinable = pools.filter((p) => String(p._id) !== String(trip.poolId) && !whyPoolRejects(describePool(p), me));
+  } else if (myPool) {
+    profiles = await publicProfiles(myPool.members.map((m) => m.userId));
   }
 
   return {
     trip,
-    ride: publicRide(trip, myPool, me),
+    ride: publicRide(trip, myPool, me, profiles),
     travellers,
     vehicles: VEHICLES.map((v) => ({
       type: v.type,
@@ -216,7 +234,7 @@ export async function getRideOptions(tripId, userId) {
       bags: v.bags,
       fitsYourGroup: fitsVehicle(v, [me]),
       soloFare: fitsVehicle(v, [me]) ? soloEstimate(v, me) : null,
-      pools: joinable.filter((p) => p.vehicleType === v.type).map((p) => publicPool(p, me, { joining: true })),
+      pools: joinable.filter((p) => p.vehicleType === v.type).map((p) => publicPool(p, me, { joining: true }, profiles)),
     })),
     reason,
     arrivalWindowMinutes: MATCHING.arrivalWindowMinutes,
@@ -228,7 +246,9 @@ export async function getRideOptions(tripId, userId) {
 export async function getRide(tripId, userId) {
   const trip = await loadOwnTrip(tripId, userId);
   const pool = trip.poolId ? await Pool.findById(trip.poolId) : null;
-  return { trip, ride: publicRide(trip, pool, describeTrip(trip)) };
+  // Profiles of the other passengers in MY shared ride (as each chose to share)
+  const profiles = pool ? await publicProfiles(pool.members.map((m) => m.userId)) : null;
+  return { trip, ride: publicRide(trip, pool, describeTrip(trip), profiles) };
 }
 
 // My Trips: ride summaries for many trips with one pool query
@@ -299,9 +319,15 @@ const POOL_REFUSALS = {
 export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) {
   const vehicle = vehicleByType(vehicleType);
   let previous = null; // the shared ride before this change, for notifications
+  let outcome = null; // 'created' | 'joined_existing' | 'joined' | null
+
+  // Starting a shared ride: make sure this group's lock document exists
+  // (outside the transaction; harmless if it already does)
+  if (mode === 'shared' && !poolId) await ensurePoolLock(await poolLockKeyFor(tripId, userId, vehicleType));
 
   try {
     const saved = await mongoose.connection.transaction(async (session) => {
+      outcome = null; // the transaction may run again after a conflict
       const trip = await loadOwnTrip(tripId, userId, session);
       assertCanChooseRide(trip);
       const me = describeTrip(trip);
@@ -342,6 +368,7 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
             addMember(target, trip, me);
             await target.save({ session });
             trip.poolId = target._id;
+            outcome = 'joined';
           } else if (current.vehicleType !== vehicleType) {
             throw new AppError(409, 'VEHICLE_MISMATCH', `That shared ride uses a ${vehicleByType(current.vehicleType).label}.`);
           }
@@ -349,6 +376,20 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
           // Start a new shared ride - unless already alone in an open one of this vehicle
           const aloneInSameKind = inOpenPool && current.vehicleType === vehicleType && current.members.length === 1;
           if (!aloneInSameKind) {
+            // Only one passenger of this group starts a shared ride at a time:
+            // a simultaneous second one conflicts here and MongoDB runs its
+            // transaction again - after the first committed.
+            await PoolLock.updateOne({ key: poolLockKey(me, vehicleType, trip.travelDate) }, { $inc: { writes: 1 } }, { session });
+            const existing = await openCompatiblePool(trip, me, vehicleType, session);
+            if (existing) {
+              // A compatible shared ride with room already exists (perhaps started a
+              // moment ago): join it rather than start a duplicate
+              await leavePool(trip, session);
+              addMember(existing, trip, me);
+              await existing.save({ session });
+              trip.poolId = existing._id;
+              outcome = 'joined_existing';
+            } else {
             await leavePool(trip, session);
             const [created] = await Pool.create(
               [
@@ -357,7 +398,7 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
                   seats: vehicle.seats,
                   bags: vehicle.bags,
                   pickupKey: me.pickupKey,
-                  pickupAirport: 'BOM',
+                  pickupAirport: me.airport, // BOM or NMI
                   pickupTerminal: trip.pickupTerminal,
                   travelDate: trip.travelDate,
                   createdBy: trip.userId,
@@ -369,6 +410,8 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
             addMember(created, trip, me);
             await created.save({ session });
             trip.poolId = created._id;
+            outcome = 'created';
+            }
           }
         }
         trip.soloFareEstimate = null;
@@ -382,6 +425,9 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
       return trip;
     });
     await notifyRideChange(previous, saved);
+    // A new shared ride: tell compatible passengers (in-app, and push if set up)
+    if (outcome === 'created') await quietly('pool_created', () => notifyPoolCreated(saved.poolId));
+    saved.$locals.rideOutcome = outcome;
     return saved;
   } catch (err) {
     // Two identical requests raced to create a pool for the same trip:
@@ -392,6 +438,93 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
     }
     throw err;
   }
+}
+
+// ---- one shared ride per group, and the live view ------------------------------
+
+// The group a new shared ride belongs to: pickup (airport + terminal), vehicle, date
+const poolLockKey = (me, vehicleType, travelDate) => `${me.pickupKey}|${vehicleType}|${travelDate}`;
+
+async function poolLockKeyFor(tripId, userId, vehicleType) {
+  const trip = await loadOwnTrip(tripId, userId);
+  return poolLockKey(describeTrip(trip), vehicleType, trip.travelDate);
+}
+
+async function ensurePoolLock(key) {
+  try {
+    await PoolLock.updateOne({ key }, { $setOnInsert: { key, writes: 0 } }, { upsert: true });
+  } catch (err) {
+    if (err.code !== 11000) throw err; // created by a simultaneous request: fine
+  }
+}
+
+// The oldest open shared ride of this vehicle that `me` may join, or null
+async function openCompatiblePool(trip, me, vehicleType, session) {
+  const windowAround = { $gte: new Date(me.arrivalAt - windowMs()), $lte: new Date(me.arrivalAt + windowMs()) };
+  const pools = await Pool.find({
+    status: 'open',
+    pickupKey: me.pickupKey,
+    vehicleType,
+    _id: { $ne: trip.poolId ?? null },
+    members: { $elemMatch: { arrivalAt: windowAround } },
+    ...(includeDemo() ? {} : { isDemo: { $ne: true } }),
+  })
+    .sort({ createdAt: 1 })
+    .session(session);
+  return pools.find((p) => !whyPoolRejects(describePool(p), me)) ?? null;
+}
+
+// GET /api/trips/:tripId/live - what the ride screens check every few seconds:
+//   activity.othersConsidering  compatible passengers choosing a ride right now (a number only)
+//   pools                       open shared rides this passenger can join (seats from the database)
+//   myPool                      this passenger's own shared ride, if any
+// Each check also renews this passenger's own intent (until they book).
+export async function getLiveRide(tripId, userId) {
+  const trip = await loadOwnTrip(tripId, userId);
+  if (trip.status === 'cancelled') {
+    await endIntent(trip._id);
+    throw new AppError(409, 'TRIP_CANCELLED', 'This trip was cancelled. Plan a new trip to continue.');
+  }
+  if (!VERIFIED_STATUSES.includes(trip.status)) {
+    throw new AppError(409, 'FLIGHT_NOT_VERIFIED', 'Verify your flight before choosing a ride.');
+  }
+
+  const me = describeTrip(trip);
+  const booked = trip.booking?.status === 'confirmed';
+  const choosing = me.fromAirport && !booked && !isExpired(trip);
+  if (choosing) await renewIntent(trip, me);
+  else await endIntent(trip._id);
+
+  const myPool = trip.poolId ? await Pool.findById(trip.poolId) : null;
+  let joinable = [];
+  if (choosing) {
+    joinable = await Pool.find({
+      status: 'open',
+      pickupKey: me.pickupKey,
+      _id: { $ne: trip.poolId ?? null },
+      members: { $elemMatch: { arrivalAt: { $gte: new Date(me.arrivalAt - windowMs()), $lte: new Date(me.arrivalAt + windowMs()) } } },
+      ...(includeDemo() ? {} : { isDemo: { $ne: true } }),
+    }).limit(100);
+    joinable = joinable.filter((p) => !whyPoolRejects(describePool(p), me));
+  }
+  const profiles = await publicProfiles([...joinable, ...(myPool ? [myPool] : [])].flatMap((p) => p.members.map((m) => m.userId)));
+
+  return {
+    serverTime: new Date().toISOString(),
+    pollAfterMs: 4000,
+    activity: { othersConsidering: choosing ? await countOthersConsidering(me) : 0 },
+    pools: joinable
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((p) => publicPool(p, me, { joining: true }, profiles)),
+    myPool: myPool && trip.rideMode === 'shared' ? publicPool(myPool, me, { joining: false }, profiles) : null,
+    booked,
+  };
+}
+
+// DELETE /api/trips/:tripId/live - the passenger left the ride screens
+export async function leaveLiveRide(tripId, userId) {
+  const trip = await loadOwnTrip(tripId, userId);
+  await endIntent(trip._id);
 }
 
 // Cancelling a trip also takes it out of its (open) shared ride, and
@@ -425,6 +558,7 @@ export async function cancelTrip(tripId, userId, { reason } = {}) {
   // Tell the others in the shared ride, and the passenger about their booking
   if (previous.poolId) await quietly('pool_left', () => notifyPoolLeft(previous.poolId, previous.leaver));
   if (wasBooked) await quietly('booking_cancelled', () => notifyBookingCancelled(cancelled));
+  await endIntent(cancelled._id); // no longer choosing a ride: stop counting at once
   return cancelled;
 }
 

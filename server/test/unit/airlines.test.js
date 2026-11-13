@@ -2,10 +2,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseFlightNumber, nameMatchesAirline, airlineByCode } from '../../src/data/airlines.js';
-import { demoVerifier } from '../../src/services/flightVerification.service.js';
+import { ticketLines } from '../helpers/tickets.js';
 
+// The verification service loads config/env.js, which needs these two. Set
+// harmless values first (no database is used here), so the tests run without
+// a server/.env - as in CI or a fresh clone - and never load a real one.
+process.env.MONGODB_URI ??= 'mongodb://127.0.0.1:1/unused';
+process.env.JWT_SECRET ??= 'unit-test-secret-that-is-long-enough-123';
+const { demoVerifier } = await import('../../src/services/flightVerification.service.js');
+
+// The entered details, checked against a readable ticket that shows the same
+// flight and date (document reading itself: test/unit/ticketVerification.test.js)
 const verify = (airline, flightNumber, travelDate = '2026-10-20') =>
-  demoVerifier({ airline, flightNumber, travelDate, today: '2026-10-11' });
+  demoVerifier({
+    airline,
+    flightNumber,
+    travelDate,
+    today: '2026-10-11',
+    passengerName: 'Test Passenger',
+    document: { readable: true, source: 'pdf_text', barcodes: [], text: ticketLines({ flightNumber, date: travelDate }).join('\n') },
+  });
 
 test('flight numbers: IATA and ICAO codes, spaces, hyphens, leading zeros', () => {
   assert.equal(parseFlightNumber('6e 2134').normalized, '6E2134');
@@ -41,6 +57,13 @@ test('demo verification: deterministic results for the same input', () => {
   assert.equal(verify('Vistara', 'UK 945').passed, false); // unknown code is not treated as valid
   assert.equal(verify('Some Airline', 'ZZ 999').passed, false);
   assert.equal(verify('IndiGo', '6E 2134', '2026-10-01').passed, false); // date in the past
+});
+
+test('demo verification never passes without a readable document', () => {
+  const base = { airline: 'IndiGo', flightNumber: '6E 2134', travelDate: '2026-10-20', today: '2026-10-11', passengerName: 'Test Passenger' };
+  assert.equal(demoVerifier(base).passed, false); // no document at all
+  assert.equal(demoVerifier({ ...base, document: { readable: false, problem: 'blank' } }).passed, false);
+  assert.deepEqual(demoVerifier({ ...base, document: { readable: false, problem: 'blank' } }).checks.map((c) => c.name), ['document_readable']);
 });
 
 test('demo verification explains what failed', () => {

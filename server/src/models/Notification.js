@@ -10,6 +10,7 @@ const { Schema } = mongoose;
 
 export const NOTIFICATION_TYPES = [
   'compatible_traveller', // a new verified traveller is compatible with your trip
+  'pool_created', // a compatible shared ride was started for your flight
   'pool_joined', // someone joined your shared ride
   'pool_left', // someone left your shared ride
   'booking_confirmed',
