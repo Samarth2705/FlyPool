@@ -2,7 +2,7 @@
 // page (see utils/landing.js) and navigates there exactly once.
 import { useEffect, useState } from 'react';
 import { Navigate } from 'react-router';
-import Spinner from './ui/Spinner';
+import LoadingState from './ui/LoadingState';
 import { resolveLandingPath } from '../utils/landing';
 
 export default function PostLoginRedirect({ from }) {
@@ -16,12 +16,6 @@ export default function PostLoginRedirect({ from }) {
     };
   }, [from]);
 
-  if (!path) {
-    return (
-      <div className="flex justify-center py-16">
-        <Spinner />
-      </div>
-    );
-  }
+  if (!path) return <LoadingState label="Finding your trip…" />;
   return <Navigate to={path} replace />;
 }

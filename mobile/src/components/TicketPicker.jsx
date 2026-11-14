@@ -54,7 +54,10 @@ function TextAction({ children, onPress, disabled, danger = false, testID }) {
   );
 }
 
-export default function TicketPicker({ value, onChange, error, disabled = false }) {
+// The words used for the document (also reused for the identity check's ID upload)
+const TICKET_WORDING = { upload: 'Upload ticket', photoOf: 'Of your boarding pass or e-ticket', preview: 'Preview of your boarding pass' };
+
+export default function TicketPicker({ value, onChange, error, disabled = false, wording = TICKET_WORDING }) {
   const { colors } = useTheme();
   const styles = useStyles();
   const [busy, setBusy] = useState(null); // 'file' | 'camera' while choosing / converting
@@ -96,7 +99,7 @@ export default function TicketPicker({ value, onChange, error, disabled = false 
               style={styles.preview}
               resizeMode="contain"
               accessible
-              accessibilityLabel="Preview of your boarding pass"
+              accessibilityLabel={wording.preview}
               testID="ticket-preview"
             />
           ) : (
@@ -148,7 +151,7 @@ export default function TicketPicker({ value, onChange, error, disabled = false 
         <View style={styles.choices}>
           <Choice
             icon={UploadIcon}
-            title="Upload ticket"
+            title={wording.upload}
             subtitle="PDF, or an image from your phone"
             onPress={() => choose('file')}
             disabled={locked}
@@ -158,7 +161,7 @@ export default function TicketPicker({ value, onChange, error, disabled = false 
           <Choice
             icon={CameraIcon}
             title="Take a photo"
-            subtitle="Of your boarding pass or e-ticket"
+            subtitle={wording.photoOf}
             onPress={() => choose('camera')}
             disabled={locked}
             busy={busy === 'camera'}

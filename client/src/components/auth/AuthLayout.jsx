@@ -1,52 +1,62 @@
 // Shared layout for the login and register pages (a layout route in App.jsx).
-// Desktop: animation panel on the left (40%), form panel on the right (60%).
-// Mobile: a short animation banner on top, the form right below it.
+// Desktop: dark brand panel with the animation on the left, form on the right.
+// Mobile: a compact brand band on top, the form right below it.
 // The page inside (AuthPage) is rendered where <Outlet /> is.
+//
+// The animation (and the animation library it needs) loads separately, after
+// the form: the form is usable straight away, and the animation's box has a
+// fixed size so nothing moves when it appears.
+import { lazy, Suspense } from 'react';
 import { Link, Outlet, useLocation } from 'react-router';
-import { motion } from 'framer-motion';
-import AirportRideAnimation from './AirportRideAnimation';
 import Logo from '../ui/Logo';
 
-const HIGHLIGHTS = ['Same flight', 'Same direction', 'Split the fare'];
+const AirportRideAnimation = lazy(() => import('./AirportRideAnimation'));
+import { ShieldIcon, PlaneIcon, UsersIcon } from '../ui/icons';
 
-const TABS = [
-  { to: '/login', label: 'Log in', mode: 'login' },
-  { to: '/register', label: 'Register', mode: 'register' },
+const HIGHLIGHTS = [
+  { Icon: PlaneIcon, title: 'Matched by flight', text: 'Passengers landing within the same window as you.' },
+  { Icon: ShieldIcon, title: 'Verified travellers', text: 'Everyone adds a boarding pass or e-ticket first.' },
+  { Icon: UsersIcon, title: 'One cab, split fare', text: 'See the estimated cost per person before you choose.' },
 ];
 
-// "Log in | Register" switch. The white pill slides between the two tabs.
-function ModeToggle({ mode }) {
+const MODES = [
+  { to: '/login', label: 'Log in', mode: 'login' },
+  { to: '/register', label: 'Create account', mode: 'register' },
+];
+
+// "Log in | Create account" switch. The white pill slides between the two.
+function ModeSwitch({ mode }) {
   const location = useLocation();
 
   return (
-    <div className="grid grid-cols-2 rounded-xl bg-slate-100 dark:bg-slate-800 p-1" role="tablist" aria-label="Log in or register">
-      {TABS.map((tab) => {
-        const active = tab.mode === mode;
+    <nav aria-label="Log in or create an account" className="relative grid grid-cols-2 rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+      <span
+        aria-hidden="true"
+        className={`absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-md bg-white shadow-sm transition-transform duration-300 ease-out motion-reduce:transition-none dark:bg-slate-700 ${
+          mode === 'register' ? 'translate-x-full' : ''
+        }`}
+      />
+      {MODES.map((item) => {
+        const active = item.mode === mode;
         return (
           <Link
-            key={tab.mode}
-            to={tab.to}
+            key={item.mode}
+            to={item.to}
             // Keep the page the user was trying to reach before logging in
             state={location.state}
             replace
-            role="tab"
-            aria-selected={active}
-            className={`relative rounded-lg py-2.5 text-center text-sm font-semibold transition-colors ${
-              active ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+            aria-current={active ? 'page' : undefined}
+            className={`relative rounded-md py-2.5 text-center text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-brand-400 focus-visible:outline-none ${
+              active
+                ? 'text-slate-900 dark:text-white'
+                : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
             }`}
           >
-            {active && (
-              <motion.span
-                layoutId="auth-mode-pill"
-                className="absolute inset-0 rounded-lg bg-white dark:bg-slate-700 shadow-sm"
-                transition={{ type: 'spring', stiffness: 500, damping: 40 }}
-              />
-            )}
-            <span className="relative">{tab.label}</span>
+            {item.label}
           </Link>
         );
       })}
-    </div>
+    </nav>
   );
 }
 
@@ -55,49 +65,50 @@ export default function AuthLayout() {
   const mode = pathname === '/register' ? 'register' : 'login';
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-950 lg:flex-row">
-      {/* Left: animation panel */}
-      <aside className="relative overflow-hidden bg-linear-to-br from-slate-950 via-blue-950 to-sky-900 px-6 pt-6 pb-2 text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-2/5 lg:flex-col lg:justify-center lg:px-12 lg:py-12">
-        {/* Soft glows */}
-        <div className="pointer-events-none absolute -top-24 -left-24 h-72 w-72 rounded-full bg-sky-500/20 blur-3xl" />
-        <div className="pointer-events-none absolute -right-20 -bottom-24 h-72 w-72 rounded-full bg-blue-500/20 blur-3xl" />
+    <div className="flex min-h-screen flex-col bg-slate-50 lg:flex-row dark:bg-slate-950">
+      {/* Brand panel */}
+      <aside className="relative bg-brand-950 px-4 pt-5 pb-3 text-white sm:px-8 lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-[42%] lg:flex-col lg:justify-between lg:px-12 lg:py-10">
+        <Logo onDark size="sm" />
 
-        <div className="relative">
-          <h2 className="text-xl leading-tight font-bold tracking-tight sm:text-2xl lg:text-4xl">
-            Your flight. Your people. <span className="text-sky-300">One shared ride.</span>
+        <div className="mt-4 lg:mt-0">
+          <h2 className="text-lg leading-snug font-semibold tracking-tight sm:text-xl lg:text-4xl lg:leading-tight lg:font-bold">
+            Landed in Mumbai? <span className="text-taxi">Share the cab home.</span>
           </h2>
-          <p className="mt-3 hidden max-w-md text-sky-100/75 lg:block">
-            Find verified passengers from your flight heading your way, share a cab from the airport and split the
-            fare.
+          <p className="mt-3 hidden max-w-md text-brand-100/80 lg:block">
+            FlyPool matches you with verified passengers arriving around the same time and heading your way.
           </p>
+          <div className="mx-auto mt-2 h-28 w-full max-w-lg sm:h-40 lg:mt-8 lg:aspect-[3/2] lg:h-auto">
+            <Suspense fallback={null}>
+              <AirportRideAnimation className="h-full w-full" />
+            </Suspense>
+          </div>
         </div>
 
-        <AirportRideAnimation className="relative mx-auto mt-2 h-36 w-full max-w-xl sm:h-48 lg:mt-10 lg:h-auto" />
-
-        <ul className="relative mt-8 hidden flex-wrap gap-2 lg:flex">
-          {HIGHLIGHTS.map((item) => (
-            <li key={item} className="rounded-full border border-white/15 bg-white/5 px-3.5 py-1.5 text-sm text-sky-100">
-              {item}
+        <ul className="hidden space-y-4 border-t border-white/10 pt-6 lg:block">
+          {HIGHLIGHTS.map(({ Icon, title, text }) => (
+            <li key={title} className="flex gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-white/10 text-taxi">
+                <Icon className="h-5 w-5" />
+              </span>
+              <span>
+                <span className="block text-sm font-semibold">{title}</span>
+                <span className="block text-sm text-brand-100/75">{text}</span>
+              </span>
             </li>
           ))}
         </ul>
       </aside>
 
-      {/* Right: authentication panel */}
-      <main className="flex flex-1 justify-center px-4 py-6 sm:px-8 sm:py-8 lg:w-3/5 lg:items-center lg:py-12">
-        <div className="w-full max-w-lg">
-          <div className="mb-5 sm:mb-8">
-            <Logo />
-            <p className="mt-3 hidden text-slate-500 dark:text-slate-400 sm:block">Airport cab pooling with passengers from your flight.</p>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xl shadow-slate-200/60 dark:shadow-black/30 sm:p-8">
-            <ModeToggle mode={mode} />
+      {/* Form panel */}
+      <main className="flex flex-1 justify-center px-4 py-6 sm:px-8 sm:py-10 lg:items-center">
+        <div className="w-full max-w-md">
+          <div className="rounded-xl border border-slate-200 bg-white p-5 sm:p-8 dark:border-slate-800 dark:bg-slate-900">
+            <ModeSwitch mode={mode} />
             <Outlet />
           </div>
 
-          <p className="mt-6 text-center text-xs text-slate-400 dark:text-slate-500">
-            Prototype: flight verification, fares and bookings are simulated.
+          <p className="mt-5 text-center text-xs text-slate-500 dark:text-slate-400">
+            Pilot service: flight checks use demo verification, and fares are estimates. Nothing is booked or charged.
           </p>
         </div>
       </main>

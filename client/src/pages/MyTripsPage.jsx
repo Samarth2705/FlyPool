@@ -1,185 +1,178 @@
 // My Trips: the passenger's saved trips (GET /api/trips), split into
 // in progress, upcoming, past and cancelled. Only real saved data is shown:
-// the flight appears once verified (Page 3) and the fare once a ride option
-// is chosen (Page 4). Confirmed bookings don't exist yet.
+// the flight appears once verified, the fare once a ride is chosen, and
+// "Booking confirmed" only when the server has a confirmed booking (a chosen
+// ride is NOT a booking - utils/bookings.js tripState).
+// This is also the logged-in "home" (the navbar logo links here).
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router';
 import AppLayout from '../components/layout/AppLayout';
-import Spinner from '../components/ui/Spinner';
-import { CalendarIcon, UsersIcon, TicketIcon } from '../components/ui/icons';
-import { cancelTrip, listMyTrips } from '../api/trips.api';
-import { MUMBAI_AIRPORT } from '../data/mumbaiLocations';
+import Button, { LinkButton } from '../components/ui/Button';
+import Badge from '../components/ui/Badge';
+import PageHeader from '../components/ui/PageHeader';
+import EmptyState from '../components/ui/EmptyState';
+import LoadingState from '../components/ui/LoadingState';
+import ErrorState from '../components/ui/ErrorState';
+import FlightCode from '../components/ui/FlightCode';
+import ConfirmDialog from '../components/ui/ConfirmDialog';
+import { ArrowRightIcon, PlusIcon, TicketIcon } from '../components/ui/icons';
+import { cancelBooking, cancelTrip, listMyTrips } from '../api/trips.api';
 import { formatDate, formatTime } from '../utils/dates';
 import { formatFlightNumber, formatRupees } from '../utils/format';
 import { rideTitle } from '../utils/rideOptions';
-
-const STATUS = {
-  awaiting_verification: {
-    label: 'Awaiting flight verification',
-    className: 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300',
-  },
-  flight_verified: {
-    label: 'Flight verified',
-    className: 'bg-sky-100 text-sky-800 dark:bg-sky-500/15 dark:text-sky-300',
-  },
-  ride_selected: {
-    label: 'Ride requested',
-    className: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300',
-  },
-  cancelled: {
-    label: 'Cancelled',
-    className: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400',
-  },
-};
-
-// Statuses where the passenger still has a step to do
-const IN_PROGRESS = ['awaiting_verification', 'flight_verified'];
-
-// Where an upcoming trip continues, by status
-const NEXT_STEP = {
-  awaiting_verification: { path: 'verify', label: 'Continue to flight verification →' },
-  flight_verified: { path: 'matches', label: 'Find your ride →' },
-  ride_selected: { path: 'summary', label: 'View summary →' },
-};
+import { pickupLabel, plural } from '../utils/trips';
+import { tripState } from '../utils/bookings';
 
 // "₹150 est. / person" (shared) or "₹300 est. total" (solo)
 function fareText(ride) {
-  if (!ride) return '—';
-  if (ride.mode === 'solo') return ride.soloFare ? `${formatRupees(ride.soloFare.total)} est. total` : '—';
+  if (!ride) return null;
+  if (ride.mode === 'solo') return ride.soloFare ? `${formatRupees(ride.soloFare.total)} est. total` : null;
   const fare = ride.pool?.fare;
-  return fare ? `${formatRupees(fare.perPerson.max)} est. / person` : '—';
+  return fare ? `${formatRupees(fare.perPerson.max)} est. / person` : null;
 }
 
-function pickupText(trip) {
-  if (trip.pickupLocation !== MUMBAI_AIRPORT.name) return trip.pickupLocation;
-  return trip.pickupTerminal ? `${MUMBAI_AIRPORT.shortName} · ${trip.pickupTerminal}` : MUMBAI_AIRPORT.shortName;
+function Fact({ label, children, muted }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs text-slate-500 dark:text-slate-400">{label}</dt>
+      <dd
+        className={`tabular mt-0.5 truncate text-sm ${muted ? 'text-slate-500 dark:text-slate-400' : 'font-medium text-slate-900 dark:text-slate-100'}`}
+      >
+        {children}
+      </dd>
+    </div>
+  );
 }
 
-function TripCard({ trip, upcoming, onCancel }) {
+function TripCard({ trip, onCancel }) {
+  const [confirming, setConfirming] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState('');
 
+  const state = tripState(trip);
+  const closeDialog = useCallback(() => {
+    setConfirming(false);
+    setCancelError('');
+  }, []);
+
   async function handleCancel() {
-    if (!window.confirm(`Cancel your trip to ${trip.destination}? This can't be undone.`)) return;
     setCancelling(true);
     setCancelError('');
     try {
-      await onCancel(trip.id);
+      await onCancel(trip, state.cancel);
     } catch (error) {
-      setCancelError(error.message);
+      setCancelError(error.message); // shown in the dialog; the list reloads with the server's state
       setCancelling(false);
     }
   }
 
-  const status = STATUS[trip.status] ?? {
-    label: trip.status,
-    className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
-  };
+  const next = state.next;
+  const fare = fareText(trip.ride);
+  const headingId = `trip-${trip.id}`;
+  const bookingRef = trip.booking?.reference;
 
   return (
-    <li className="rounded-2xl border border-slate-200/70 bg-white p-5 shadow-sm sm:p-6 dark:border-slate-800 dark:bg-slate-900">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <li
+      aria-labelledby={headingId}
+      className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3 p-4 sm:p-5">
         <div className="min-w-0">
-          <p className="text-xs text-slate-400 dark:text-slate-500">From {pickupText(trip)}</p>
-          <p className="mt-0.5 truncate text-lg font-semibold text-slate-900 dark:text-white">To {trip.destination}</p>
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            {formatDate(trip.travelDate)} · lands {formatTime(trip.expectedArrivalTime)}
+          </p>
+          <h3 id={headingId} className="mt-0.5 text-lg font-semibold break-words text-slate-900 dark:text-white">
+            To {trip.destination}
+          </h3>
+          <p className="text-sm text-slate-600 dark:text-slate-400">From {pickupLabel(trip)}</p>
         </div>
-        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${status.className}`}>{status.label}</span>
+        <Badge tone={state.tone}>{state.label}</Badge>
       </div>
 
-      <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-4">
-        <div>
-          <dt className="flex items-center gap-1.5 text-slate-400 dark:text-slate-500">
-            <CalendarIcon className="h-4 w-4" /> Date
-          </dt>
-          <dd className="mt-0.5 font-medium text-slate-800 dark:text-slate-200">{formatDate(trip.travelDate)}</dd>
-        </div>
-        <div>
-          <dt className="text-slate-400 dark:text-slate-500">Arrival</dt>
-          <dd className="mt-0.5 font-medium text-slate-800 dark:text-slate-200">{formatTime(trip.expectedArrivalTime)}</dd>
-        </div>
-        <div>
-          <dt className="flex items-center gap-1.5 text-slate-400 dark:text-slate-500">
-            <UsersIcon className="h-4 w-4" /> Passengers
-          </dt>
-          <dd className="mt-0.5 font-medium text-slate-800 dark:text-slate-200">{trip.passengerCount}</dd>
-        </div>
-        <div>
-          <dt className="text-slate-400 dark:text-slate-500">Bags</dt>
-          <dd className="mt-0.5 font-medium text-slate-800 dark:text-slate-200">{trip.luggageCount}</dd>
-        </div>
-        <div>
-          <dt className="text-slate-400 dark:text-slate-500">Flight</dt>
-          {trip.flight ? (
-            <dd className="mt-0.5 font-medium text-slate-800 dark:text-slate-200">
-              {formatFlightNumber(trip.flight.flightNumber)}
-            </dd>
-          ) : (
-            <dd className="mt-0.5 text-slate-500 dark:text-slate-400">Not verified yet</dd>
-          )}
-        </div>
-        <div>
-          <dt className="text-slate-400 dark:text-slate-500">Ride</dt>
-          <dd className={`mt-0.5 ${trip.ride ? 'font-medium text-slate-800 dark:text-slate-200' : 'text-slate-500 dark:text-slate-400'}`}>
-            {trip.ride ? rideTitle(trip.ride) : 'Not chosen yet'}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-slate-400 dark:text-slate-500">Fare</dt>
-          <dd className="mt-0.5 font-medium text-slate-800 dark:text-slate-200">{fareText(trip.ride)}</dd>
-        </div>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-slate-100 px-4 py-4 sm:grid-cols-4 sm:px-5 dark:border-slate-800">
+        <Fact label="Flight" muted={!trip.flight}>
+          {trip.flight ? <FlightCode>{formatFlightNumber(trip.flight.flightNumber)}</FlightCode> : 'Not verified yet'}
+        </Fact>
+        <Fact label="Travelling">
+          {plural(trip.passengerCount, 'person', 'people')} · {plural(trip.luggageCount, 'bag', 'bags')}
+        </Fact>
+        <Fact label="Ride" muted={!trip.ride}>
+          {trip.ride ? rideTitle(trip.ride) : 'Not chosen yet'}
+        </Fact>
+        <Fact label="Fare" muted={!fare}>
+          {fare ?? '—'}
+        </Fact>
         {trip.ride?.mode === 'shared' && trip.ride.pool && (
-          <div>
-            <dt className="text-slate-400 dark:text-slate-500">Shared with</dt>
-            <dd className="mt-0.5 font-medium text-slate-800 dark:text-slate-200">
-              {trip.ride.pool.bookings === 1
-                ? 'Nobody yet'
-                : `${trip.ride.pool.bookings - 1} ${trip.ride.pool.bookings - 1 === 1 ? 'booking' : 'bookings'}`}{' '}
-              ·{' '}
-              {trip.ride.pool.seatsTaken}/{trip.ride.pool.seats} seats
-            </dd>
-          </div>
+          <Fact label="Shared with">
+            {trip.ride.pool.bookings === 1 ? 'Nobody yet' : plural(trip.ride.pool.bookings - 1, 'booking', 'bookings')} ·{' '}
+            {trip.ride.pool.seatsTaken}/{trip.ride.pool.seats} seats
+          </Fact>
+        )}
+        {bookingRef && (
+          <Fact label="Booking">
+            <span className="font-mono">{bookingRef}</span>
+          </Fact>
         )}
       </dl>
 
-      {upcoming && trip.status !== 'cancelled' && (
-        <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3">
-          {NEXT_STEP[trip.status] && (
-            <Link
-              to={`/trip/${trip.id}/${NEXT_STEP[trip.status].path}`}
-              className="inline-flex items-center rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-700 focus-visible:ring-4 focus-visible:ring-sky-300 focus-visible:outline-none"
-            >
-              {NEXT_STEP[trip.status].label}
-            </Link>
+      {(next || state.cancel) && (
+        <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 px-4 py-3 sm:px-5 dark:border-slate-800">
+          {next && (
+            <LinkButton to={`/trip/${trip.id}/${next.path}`} size="sm" variant={state.inProgress ? 'primary' : 'secondary'}>
+              {next.label}
+              <ArrowRightIcon className="h-4 w-4" />
+            </LinkButton>
           )}
-          <button
-            type="button"
-            onClick={handleCancel}
-            disabled={cancelling}
-            className="py-2 text-sm font-medium text-rose-600 hover:underline disabled:opacity-60 dark:text-rose-400"
-          >
-            {cancelling ? 'Cancelling…' : 'Cancel trip'}
-          </button>
+          {state.cancel && (
+            <Button
+              variant="ghost"
+              size="sm"
+              fullWidth={false}
+              onClick={() => setConfirming(true)}
+              className="ml-auto text-rose-700! hover:bg-rose-50! dark:text-rose-400! dark:hover:bg-rose-950/40!"
+            >
+              {state.cancel === 'booking' ? 'Cancel booking' : 'Cancel trip'}
+            </Button>
+          )}
         </div>
       )}
-      {cancelError && (
-        <p role="alert" className="mt-2 text-sm text-rose-600 dark:text-rose-400">
-          {cancelError}
+
+      <ConfirmDialog
+        open={confirming}
+        title={state.cancel === 'booking' ? `Cancel booking ${bookingRef}?` : 'Cancel this trip?'}
+        confirmLabel={state.cancel === 'booking' ? 'Yes, cancel booking' : 'Yes, cancel trip'}
+        cancelLabel={state.cancel === 'booking' ? 'Keep booking' : 'Keep trip'}
+        busyLabel="Cancelling…"
+        tone="danger"
+        busy={cancelling}
+        error={cancelError}
+        onConfirm={handleCancel}
+        onClose={closeDialog}
+      >
+        <p>
+          {state.cancel === 'booking'
+            ? 'This cancels your confirmed booking and the trip. It can’t be undone. To leave only a shared ride and keep the trip, open the booking instead.'
+            : 'This can’t be undone.'}
         </p>
-      )}
+      </ConfirmDialog>
     </li>
   );
 }
 
-function TripSection({ title, trips, upcoming, onCancel }) {
+function TripSection({ title, description, trips, onCancel }) {
   if (trips.length === 0) return null;
+  const id = `section-${title.toLowerCase().replace(/\s+/g, '-')}`;
   return (
-    <section className="mt-8">
-      <h2 className="text-sm font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
-        {title} · {trips.length}
-      </h2>
-      <ul className="mt-3 space-y-4">
+    <section className="mt-8" aria-labelledby={id}>
+      <div className="flex items-baseline gap-2">
+        <h2 id={id} className="text-base font-semibold text-slate-900 dark:text-white">
+          {title}
+        </h2>
+        <span className="tabular text-sm text-slate-500 dark:text-slate-400">{trips.length}</span>
+      </div>
+      {description && <p className="text-sm text-slate-600 dark:text-slate-400">{description}</p>}
+      <ul className="mt-3 space-y-3">
         {trips.map((trip) => (
-          <TripCard key={trip.id} trip={trip} upcoming={upcoming} onCancel={onCancel} />
+          <TripCard key={trip.id} trip={trip} onCancel={onCancel} />
         ))}
       </ul>
     </section>
@@ -193,8 +186,8 @@ function groupTrips(trips, now = Date.now()) {
   const active = trips.filter((t) => t.status !== 'cancelled');
   return {
     all: trips,
-    inProgress: active.filter((t) => future(t) && IN_PROGRESS.includes(t.status)).reverse(),
-    upcoming: active.filter((t) => future(t) && !IN_PROGRESS.includes(t.status)).reverse(),
+    inProgress: active.filter((t) => future(t) && tripState(t, now).inProgress).reverse(),
+    upcoming: active.filter((t) => future(t) && !tripState(t, now).inProgress).reverse(),
     past: active.filter((t) => !future(t)),
     cancelled: trips.filter((t) => t.status === 'cancelled'),
   };
@@ -207,7 +200,10 @@ export default function MyTripsPage() {
   const load = useCallback(
     () =>
       listMyTrips()
-        .then((list) => setTrips(groupTrips(list)))
+        .then((list) => {
+          setError(null);
+          setTrips(groupTrips(list));
+        })
         .catch(setError),
     [],
   );
@@ -216,51 +212,71 @@ export default function MyTripsPage() {
     load();
   }, [load]);
 
-  async function handleCancel(tripId) {
-    await cancelTrip(tripId); // throws on failure; the card shows the error
-    await load();
+  // A booked trip is cancelled through its booking (the server keeps the booking
+  // record as cancelled); others with the trip cancellation. Errors are shown in
+  // the card's dialog, and the list is reloaded either way.
+  async function handleCancel(trip, kind) {
+    try {
+      if (kind === 'booking') await cancelBooking(trip.id);
+      else await cancelTrip(trip.id);
+    } finally {
+      await load();
+    }
   }
+
+  const hasTrips = trips?.all.length > 0;
 
   return (
     <AppLayout title="My Trips">
       <div className="mx-auto max-w-3xl">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-white">My Trips</h1>
-        <p className="mt-1 text-slate-500 dark:text-slate-400">Your airport rides - in progress, upcoming and past.</p>
+        <PageHeader
+          title="My Trips"
+          description="Pick up where you left off, or look back at past rides."
+          actions={
+            hasTrips && (
+              <LinkButton to="/trip/new" size="sm">
+                <PlusIcon className="h-4 w-4" />
+                Plan a ride
+              </LinkButton>
+            )
+          }
+        />
 
-        {!trips && !error && (
-          <div className="flex justify-center py-16">
-            <Spinner />
-          </div>
-        )}
+        {!trips && !error && <LoadingState label="Loading your trips…" />}
 
         {error && (
-          <p role="alert" className="mt-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">
-            Couldn&apos;t load your trips: {error.message}
-          </p>
+          <div className="mt-6">
+            <ErrorState error={error} title="We couldn’t load your trips" onRetry={load} />
+          </div>
         )}
 
         {trips?.all.length === 0 && (
-          <div className="mt-8 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
-            <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-sky-50 text-sky-600 dark:bg-sky-950/60 dark:text-sky-400">
-              <TicketIcon className="h-6 w-6" />
-            </span>
-            <p className="mt-4 font-semibold text-slate-900 dark:text-white">No trips yet</p>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Trips you plan are saved to your account and show up here.</p>
-            <Link
-              to="/trip/new"
-              className="mt-5 inline-flex rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-700 focus-visible:ring-4 focus-visible:ring-sky-300 focus-visible:outline-none"
-            >
-              Plan Your First Ride
-            </Link>
-          </div>
+          <EmptyState
+            className="mt-8"
+            icon={TicketIcon}
+            title="No trips yet"
+            action={
+              <LinkButton to="/trip/new">
+                <PlusIcon className="h-5 w-5" />
+                Plan your first ride
+              </LinkButton>
+            }
+          >
+            Tell us about your flight and destination. We&apos;ll find verified passengers heading your way.
+          </EmptyState>
         )}
 
-        {trips?.all.length > 0 && (
+        {hasTrips && (
           <>
-            <TripSection title="In progress" trips={trips.inProgress} upcoming onCancel={handleCancel} />
-            <TripSection title="Upcoming" trips={trips.upcoming} upcoming onCancel={handleCancel} />
-            <TripSection title="Past" trips={trips.past} upcoming={false} />
-            <TripSection title="Cancelled" trips={trips.cancelled} upcoming={false} />
+            <TripSection
+              title="In progress"
+              description="These trips still need a step from you."
+              trips={trips.inProgress}
+              onCancel={handleCancel}
+            />
+            <TripSection title="Upcoming" trips={trips.upcoming} onCancel={handleCancel} />
+            <TripSection title="Past" trips={trips.past} onCancel={handleCancel} />
+            <TripSection title="Cancelled" trips={trips.cancelled} onCancel={handleCancel} />
           </>
         )}
       </div>

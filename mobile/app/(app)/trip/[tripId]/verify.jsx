@@ -395,8 +395,9 @@ export default function VerifyFlightScreen() {
             </View>
             <View style={styles.demo}>
               <AppText variant="caption" style={styles.demoText}>
-                Demo verification: FlyPool checks the file type and that your flight details are consistent. It
-                doesn’t read the document or confirm your booking with the airline yet.
+                Demo verification: FlyPool reads your ticket and checks that it shows your name, this flight number,
+                your travel date and Mumbai. It can’t tell whether a ticket is genuine - nothing is confirmed with the
+                airline.
               </AppText>
             </View>
           </Card>

@@ -7,18 +7,16 @@
 //
 // Each test uses its own random travel date and landing time, so trips from
 // other tests (and the other platform's run) can't show up as matches.
-import fs from 'node:fs';
-import path from 'node:path';
 import nodeAxios from 'axios/dist/node/axios.cjs';
 import { screen, within } from 'expo-router/testing-library';
 import api from '../src/api/client';
 import { addDays, formatTime, todayInMumbai } from '../src/shared/dates';
 import { act, launchApp, newUserDetails, press, signedInUser, typeInto, waitFor } from './helpers';
+import { ticketFor, ticketLines, ticketPdf } from './tickets';
 
 const network = globalThis.network;
 const device = globalThis.device;
 const AIRPORT = 'Chhatrapati Shivaji Maharaj International Airport, Mumbai';
-const PDF = fs.readFileSync(path.join(__dirname, 'fixtures', 'e-ticket.pdf'));
 const EMPTY =
   'No compatible travellers found yet. We’ll show you when someone with a similar route joins FlyPool.';
 
@@ -68,7 +66,7 @@ async function verifyTrip(token, trip, { flightNumber = '6E 2134', airline = 'In
     airline,
     flightNumber,
     scheduledArrivalTime: trip.expectedArrivalTime,
-    document: { mimeType: 'application/pdf', dataBase64: PDF.toString('base64') },
+    document: await ticketFor(token, trip, { airline, flightNumber }),
   };
   return (await server.post(`/trips/${trip.id}/verification`, body, as(token))).data.data.trip;
 }
@@ -143,6 +141,8 @@ test('after verifying in the app, Find Travellers lists the server’s compatibl
   const matches = controlMatches();
   await launchApp(`/trip/${trip.id}/verify`);
   await screen.findByTestId('trip-route');
+  // The passenger's own e-ticket: their name, this flight, the trip's date
+  const PDF = ticketPdf(ticketLines({ date: trip.travelDate }));
   const uri = device.files.inCache('e-ticket.pdf', PDF);
   device.documentPicker.answer = { uri, name: 'e-ticket.pdf', mimeType: 'application/pdf', size: PDF.length };
   await press(screen.getByTestId('ticket-upload'));
@@ -165,13 +165,14 @@ test('after verifying in the app, Find Travellers lists the server’s compatibl
 
   // Best first (the server's order): same flight, then closest landing time
   const [first, second] = cards();
-  expect(first).toHaveTextContent(/Traveller 1.*Same flight.*6E 2134/);
+  // Shown by short name (change 3), e.g. "Asha V.", never the full name
+  expect(first).toHaveTextContent(/^[A-Z][a-z]+ [A-Z]\..*ID not checked.*Same flight.*6E 2134/);
   expect(first).toHaveTextContent(new RegExp(`Lands${formatTime(slot.time)}.*Same time as you`));
   expect(first).toHaveTextContent(/Going toPowai.*Group1 person/);
   expect(within(first).getByText('Same flight as you')).toBeTruthy();
   expect(within(first).getByText('Same pickup: Terminal 2')).toBeTruthy();
 
-  expect(second).toHaveTextContent(/Traveller 2.*AI 101/);
+  expect(second).toHaveTextContent(/^[A-Z][a-z]+ [A-Z]\..*AI 101/); // by short name (change 3)
   expect(within(second).queryByText('Same flight')).toBeNull();
   expect(second).toHaveTextContent(new RegExp(`Lands${formatTime(later.time)}.*10 min after you`));
   expect(second).toHaveTextContent(/Going toPowai.*Group2 people/);
@@ -259,7 +260,7 @@ test('a pickup away from the airport: explains why no travellers are shown', asy
   const { trip } = await me(uniqueSlot(), { trip: { pickupLocation: 'Hotel Sahara Star', pickupTerminal: null } });
   await launchApp(`/trip/${trip.id}/matches`);
   expect(await screen.findByText('No travellers to show for this trip')).toBeTruthy();
-  expect(screen.getByText(/works for pickups at Mumbai Airport only/)).toBeTruthy();
+  expect(screen.getByText(/works for pickups at Mumbai Airport or Navi Mumbai Airport only/)).toBeTruthy();
   expect(screen.queryByText(EMPTY)).toBeNull();
 });
 

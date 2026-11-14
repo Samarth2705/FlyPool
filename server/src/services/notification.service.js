@@ -73,7 +73,7 @@ export function notifyWelcome(user) {
       userId: user._id,
       type: 'system',
       title: 'Welcome to FlyPool',
-      message: 'Plan a trip from Mumbai Airport and we’ll look for verified travellers to share your cab with.',
+      message: 'Plan a trip from Mumbai or Navi Mumbai Airport and we’ll look for verified travellers to share your cab with.',
       dedupeKey: 'welcome',
     },
   ]);
@@ -103,6 +103,40 @@ export async function notifyCompatibleTravellers(newTrip) {
       message: `A verified traveller (${plural(me.partySize, 'person', 'people')}) landing within ${MATCHING.arrivalWindowMinutes} min of you is heading ${area ? `to ${area}` : 'your way'}.`,
       tripId: other.id,
       dedupeKey: `compatible:${other.id}:${me.id}`,
+    }));
+  await deliver(entries);
+}
+
+// A new shared ride was started: tell compatible passengers who are still
+// choosing (verified, open to sharing, not booked, not in a shared ride yet)
+export async function notifyPoolCreated(poolId) {
+  const pool = await Pool.findById(poolId);
+  if (!pool || pool.status !== 'open' || pool.members.length === 0) return;
+  const creatorTrip = await Trip.findById(pool.members[0].tripId);
+  if (!creatorTrip) return;
+  const me = describeTrip(creatorTrip);
+  const windowMs = MATCHING.arrivalWindowMinutes * 60 * 1000;
+  const candidates = await Trip.find({
+    _id: { $ne: creatorTrip._id },
+    userId: { $ne: creatorTrip.userId },
+    status: { $in: VERIFIED_STATUSES },
+    poolId: null,
+    'booking.status': { $ne: 'confirmed' },
+    arrivalAt: { $gte: new Date(Math.max(me.arrivalAt - windowMs, Date.now())), $lte: new Date(me.arrivalAt + windowMs) },
+    ...(env.isProduction ? { isDemo: { $ne: true } } : {}),
+  }).limit(200);
+  const vehicle = vehicleByType(pool.vehicleType);
+  const seatsLeft = pool.seats - pool.seatsTaken;
+  const entries = candidates
+    .map(describeTrip)
+    .filter((other) => isOpenToSharing(other) && isCompatible(other, me))
+    .map((other) => ({
+      userId: other.userId,
+      type: 'pool_created',
+      title: 'A new shared ride for your flight',
+      message: `A compatible passenger started a shared ${vehicle.label.toLowerCase()} - ${seatsLeft} ${seatsLeft === 1 ? 'seat' : 'seats'} left. Open FlyPool to join it.`,
+      tripId: other.id,
+      dedupeKey: `pool_created:${other.id}:${pool._id}`,
     }));
   await deliver(entries);
 }

@@ -130,3 +130,16 @@ export async function getPaymentView(tripId) {
 export async function startPayment(tripId) {
   return unwrap(await api.post(`/trips/${tripId}/payment`, {}));
 }
+
+// Live ride activity, polled while the ride screens are open (useLiveRide):
+//   { activity: { othersConsidering }, pools, myPool, booked, pollAfterMs, serverTime }
+// Each check also tells the server this passenger is still choosing a ride.
+export async function getLiveRide(tripId) {
+  return unwrap(await api.get(`/trips/${tripId}/live`));
+}
+
+// The passenger left the ride screens: stop counting them at once (best effort -
+// if this fails, the server stops counting them by itself after ~30 s)
+export async function leaveLiveRide(tripId) {
+  return unwrap(await api.delete(`/trips/${tripId}/live`, { timeout: 5000 }));
+}

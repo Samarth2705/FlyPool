@@ -3,17 +3,15 @@
 // Two (or three) real accounts: this phone's passenger, and others who use
 // the server directly - like a second phone. Every message is saved and
 // returned by the server; updates arrive by the app's own polling.
-import fs from 'node:fs';
-import path from 'node:path';
 import nodeAxios from 'axios/dist/node/axios.cjs';
 import { screen, within } from 'expo-router/testing-library';
 import api from '../src/api/client';
 import { addDays, todayInMumbai } from '../src/shared/dates';
 import { launchApp, newUserDetails, press, signedInUser, typeInto, waitFor } from './helpers';
+import { ticketFor } from './tickets';
 
 const network = globalThis.network;
 const AIRPORT = 'Chhatrapati Shivaji Maharaj International Airport, Mumbai';
-const PDF = fs.readFileSync(path.join(__dirname, 'fixtures', 'e-ticket.pdf'));
 
 const randomIp = () => `10.${200 + Math.floor(Math.random() * 50)}.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`;
 const server = nodeAxios.create({
@@ -49,7 +47,7 @@ async function verifiedTrip(token, slot, details = {}) {
     airline: 'IndiGo',
     flightNumber: '6E 2134',
     scheduledArrivalTime: slot.time,
-    document: { mimeType: 'application/pdf', dataBase64: PDF.toString('base64') },
+    document: await ticketFor(token, trip),
   };
   return (await server.post(`/trips/${trip.id}/verification`, verification, as(token))).data.data.trip;
 }
@@ -181,7 +179,9 @@ test('Send: empty messages can’t be sent; tapping Send again doesn’t duplica
   await press(screen.getByTestId('chat-send'));
   await press(screen.getByTestId('chat-send'));
   await waitFor(() => expect(messageTexts()).toEqual(['Hello']));
-  expect((await messagesFor(ravi.token, poolId)).messages).toHaveLength(1);
+  // The app shows the message as soon as it's sent; the server's copy follows
+  await waitFor(async () => expect((await messagesFor(ravi.token, poolId)).messages).toHaveLength(1));
+  expect((await messagesFor(ravi.token, poolId)).messages).toHaveLength(1); // still one: no duplicate
 });
 
 test('someone outside the shared ride can’t open its chat, even with the right id', async () => {

@@ -8,10 +8,3 @@ export function rideTitle(ride) {
   const vehicle = ride.vehicle?.label ?? ride.vehicleType;
   return `${RIDE_MODE_LABELS[ride.mode]} · ${vehicle}`;
 }
-
-// "Lands 10 min after you" / "Lands at the same time as you"
-export function arrivalText(minutesApart) {
-  if (minutesApart === 0) return 'Lands at the same time as you';
-  const minutes = Math.abs(minutesApart);
-  return `Lands ${minutes} min ${minutesApart > 0 ? 'after' : 'before'} you`;
-}

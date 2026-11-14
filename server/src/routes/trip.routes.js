@@ -10,6 +10,8 @@ import {
   getMatches,
   getRide,
   chooseRide,
+  getLiveRide,
+  leaveLiveRide,
   confirmBooking,
   getBookingManagement,
   cancelBooking,
@@ -21,7 +23,7 @@ import { paymentLimiter } from '../middleware/rateLimiter.js';
 import { validate } from '../middleware/validate.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { AppError } from '../utils/AppError.js';
-import { tripWriteLimiter } from '../middleware/rateLimiter.js';
+import { liveLimiter, tripWriteLimiter } from '../middleware/rateLimiter.js';
 import {
   createTripSchema,
   updateTripSchema,
@@ -56,6 +58,9 @@ router.post('/:tripId/verification', validate(flightVerificationSchema), verifyF
 // Page 4 / 5
 router.get('/:tripId/matches', getMatches);
 router.get('/:tripId/ride', getRide);
+// Live ride activity (polled by the app every few seconds while a ride screen is open)
+router.get('/:tripId/live', liveLimiter, getLiveRide);
+router.delete('/:tripId/live', liveLimiter, leaveLiveRide);
 router.put('/:tripId/ride', tripWriteLimiter, validate(rideChoiceSchema), chooseRide);
 
 // Booking summary -> confirmation (no payment yet)

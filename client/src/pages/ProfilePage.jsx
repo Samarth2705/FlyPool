@@ -1,62 +1,91 @@
-// My Profile: the logged-in user's account details, read from the existing
-// auth state (useAuth). Read-only - the API has no "update profile" route yet.
-import { Link } from 'react-router';
+// My Profile: the logged-in user's account details (from useAuth, read-only),
+// what other passengers see about them (date of birth -> age, gender and
+// whether to show it), and their identity check (manual demo check).
+import { useCallback, useEffect, useState } from 'react';
 import AppLayout from '../components/layout/AppLayout';
+import { LinkButton } from '../components/ui/Button';
+import Card from '../components/ui/Card';
+import PageHeader from '../components/ui/PageHeader';
+import DetailList from '../components/ui/DetailList';
+import LoadingState from '../components/ui/LoadingState';
+import ErrorState from '../components/ui/ErrorState';
+import TravellerDetailsCard from '../components/profile/TravellerDetailsCard';
+import IdentityCard from '../components/profile/IdentityCard';
+import { SettingsIcon, TicketIcon } from '../components/ui/icons';
 import { useAuth } from '../hooks/useAuth';
+import { getProfile } from '../api/profile.api';
 import { initialsOf, formatPhone } from '../utils/format';
-
-const card = 'rounded-2xl border border-slate-200/70 bg-white p-6 shadow-sm sm:p-8 dark:border-slate-800 dark:bg-slate-900';
 
 export default function ProfilePage() {
   const { user } = useAuth();
+  const [profile, setProfile] = useState(null);
+  const [error, setError] = useState(null);
   const memberSince = user.createdAt
     ? new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric' }).format(new Date(user.createdAt))
     : null;
 
-  const rows = [
-    ['Full name', user.name],
-    ['Email', user.email],
-    ['Mobile number', user.phone ? formatPhone(user.phone) : 'Not added'],
-  ];
+  const load = useCallback(
+    () =>
+      getProfile()
+        .then((p) => {
+          setError(null);
+          setProfile(p);
+        })
+        .catch(setError),
+    [],
+  );
+  useEffect(() => {
+    load();
+  }, [load]);
 
   return (
     <AppLayout title="My Profile">
       <div className="mx-auto max-w-2xl">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-white">My Profile</h1>
-        <p className="mt-1 text-slate-500 dark:text-slate-400">Your FlyPool account details.</p>
+        <PageHeader title="My Profile" description="Your FlyPool account details." />
 
-        <section className={`mt-6 ${card}`}>
+        <Card padding="lg" className="mt-6">
           <div className="flex items-center gap-4">
-            <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-sky-600 text-xl font-semibold text-white">
+            <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-brand-600 text-lg font-semibold text-white">
               {initialsOf(user.name)}
             </span>
             <div className="min-w-0">
               <p className="truncate text-lg font-semibold text-slate-900 dark:text-white">{user.name}</p>
-              {memberSince && <p className="text-sm text-slate-500 dark:text-slate-400">Member since {memberSince}</p>}
+              {memberSince && <p className="text-sm text-slate-600 dark:text-slate-400">Member since {memberSince}</p>}
             </div>
           </div>
 
-          <dl className="mt-6 divide-y divide-slate-100 border-t border-slate-100 dark:divide-slate-800 dark:border-slate-800">
-            {rows.map(([label, value]) => (
-              <div key={label} className="flex flex-col gap-0.5 py-3.5 sm:flex-row sm:justify-between sm:gap-4">
-                <dt className="text-sm text-slate-500 dark:text-slate-400">{label}</dt>
-                <dd className="font-medium break-all text-slate-900 sm:text-right dark:text-slate-100">{value}</dd>
-              </div>
-            ))}
-          </dl>
+          <DetailList
+            className="mt-6 border-t border-slate-100 dark:border-slate-800 [&_dd]:break-all"
+            rows={[
+              ['Full name', user.name],
+              ['Email', user.email],
+              ['Mobile number', user.phone ? formatPhone(user.phone) : 'Not added'],
+            ]}
+          />
 
-          <p className="mt-4 rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
-            Editing your details isn&apos;t available yet.
-          </p>
-        </section>
+          <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">Editing your account details isn&apos;t available yet.</p>
+        </Card>
 
-        <div className="mt-6 flex flex-wrap gap-x-6 gap-y-2 text-sm font-medium">
-          <Link to="/trips" className="text-sky-700 hover:underline dark:text-sky-400">
-            My Trips →
-          </Link>
-          <Link to="/settings" className="text-sky-700 hover:underline dark:text-sky-400">
-            Settings →
-          </Link>
+        <div className="mt-6 space-y-6">
+          {!profile && !error && <LoadingState label="Loading your profile…" />}
+          {error && <ErrorState error={error} title="We couldn’t load your profile" onRetry={load} />}
+          {profile && (
+            <>
+              <TravellerDetailsCard profile={profile} onSaved={setProfile} />
+              <IdentityCard identity={profile.identity} onChanged={(identity) => setProfile((p) => ({ ...p, identity }))} />
+            </>
+          )}
+        </div>
+
+        <div className="mt-6 flex flex-wrap gap-3">
+          <LinkButton to="/trips" variant="secondary" size="sm">
+            <TicketIcon className="h-4 w-4" />
+            My Trips
+          </LinkButton>
+          <LinkButton to="/settings" variant="secondary" size="sm">
+            <SettingsIcon className="h-4 w-4" />
+            Settings
+          </LinkButton>
         </div>
       </div>
     </AppLayout>

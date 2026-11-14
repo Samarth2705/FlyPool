@@ -19,6 +19,8 @@ import FlightCode from '../../../../src/components/FlightCode';
 import FormScreen from '../../../../src/components/FormScreen';
 import TravellerCard from '../../../../src/components/TravellerCard';
 import VerifiedFlightCard from '../../../../src/components/VerifiedFlightCard';
+import LiveActivity from '../../../../src/components/LiveActivity';
+import { useLiveRide } from '../../../../src/live/useLiveRide';
 import { UsersIcon } from '../../../../src/components/icons';
 import { getMatches } from '../../../../src/api/trips.api';
 import { startNewTrip, stepHref } from '../../../../src/navigation/tripSteps';
@@ -32,7 +34,7 @@ const EMPTY_MESSAGE =
 
 // When the server can't look for travellers for this trip (data.reason)
 const REASONS = {
-  custom_pickup: 'Finding travellers works for pickups at Mumbai Airport only, and this trip starts somewhere else.',
+  custom_pickup: 'Finding travellers works for pickups at Mumbai Airport or Navi Mumbai Airport only, and this trip starts somewhere else.',
   expired: 'This flight has already landed, so FlyPool is no longer looking for travellers for this trip.',
 };
 
@@ -155,6 +157,10 @@ export default function FindTravellersScreen() {
     };
   }, [fetchMatches]);
 
+  // While in view: other compatible passengers choosing now, and new shared
+  // rides for this flight (checked about every 4 s; a change refreshes the list quietly)
+  const live = useLiveRide(tripId, { onPoolsChanged: fetchMatches });
+
   const trip = data?.trip;
   const travellers = data?.travellers ?? [];
 
@@ -166,6 +172,7 @@ export default function FindTravellersScreen() {
         </AppText>
         <AppText variant="small">Verified travellers landing near your time and heading your way.</AppText>
       </View>
+      <LiveActivity live={live} />
 
       {!data && loading && (
         <View style={styles.loading} testID="matches-loading">

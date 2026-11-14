@@ -6,7 +6,7 @@ import { View } from 'react-native';
 import AppText from './AppText';
 import Card from './Card';
 import FlightCode from './FlightCode';
-import { CheckIcon, ShieldIcon } from './icons';
+import { AlertIcon, CheckIcon, ShieldIcon } from './icons';
 import { formatDate, formatTime } from '../shared/dates';
 import { formatFlightNumber } from '../shared/format';
 import { isDemoVerification, partyLabel, pickupLabel } from '../shared/trips';
@@ -27,6 +27,32 @@ function Row({ label, children }) {
     </View>
   );
 }
+
+// The five separate answers of a verification (server: verification.levels).
+// "Confirmed with the airline" is only ever ticked by a trusted source.
+const LEVELS = [
+  ['fileAccepted', 'File accepted'],
+  ['documentReadable', 'Document readable'],
+  ['detailsExtracted', 'Flight details found on the document'],
+  ['detailsMatched', 'Details match your trip'],
+  ['authenticityConfirmed', 'Booking confirmed with the airline'],
+];
+
+function Level({ done, label, note }) {
+  const { colors } = useTheme();
+  const styles = useStyles();
+  return (
+    <View style={styles.check} accessibilityLabel={`${label}: ${done ? 'yes' : 'no'}`} testID={`level-${done ? 'yes' : 'no'}`}>
+      {done ? <CheckIcon size={16} color={colors.success} /> : <AlertIcon size={16} color={colors.textMuted} />}
+      <AppText variant="small" style={styles.flex}>
+        {label}
+        {note ? <AppText variant="caption">{` - ${note}`}</AppText> : null}
+      </AppText>
+    </View>
+  );
+}
+
+const airportText = (code) => code ?? 'not found on the document';
 
 export default function VerifiedFlightCard({ trip }) {
   const { colors } = useTheme();
@@ -66,6 +92,30 @@ export default function VerifiedFlightCard({ trip }) {
         </Row>
       </View>
 
+      {verification?.levels ? (
+        <View style={styles.checks} accessibilityLabel="What was verified" testID="verification-levels">
+          <AppText variant="overline">What was verified</AppText>
+          {LEVELS.map(([key, label]) => (
+            <Level
+              key={key}
+              label={label}
+              done={Boolean(verification.levels[key])}
+              note={key === 'authenticityConfirmed' && !verification.levels[key] ? 'not available: no airline connection' : null}
+            />
+          ))}
+        </View>
+      ) : null}
+
+      {verification?.extraction?.details ? (
+        <View style={styles.rows} testID="extracted-details">
+          <AppText variant="overline">Read from your ticket</AppText>
+          <Row label="Airline">{verification.extraction.details.airline ?? 'not found'}</Row>
+          <Row label="From">{airportText(verification.extraction.details.departureAirport)}</Row>
+          <Row label="To">{airportText(verification.extraction.details.arrivalAirport)}</Row>
+          <Row label="Departs">{verification.extraction.details.departureTime ? formatTime(verification.extraction.details.departureTime) : 'not shown on the document'}</Row>
+        </View>
+      ) : null}
+
       {verification?.checks?.length ? (
         <View style={styles.checks} accessibilityLabel="Checks that passed">
           {verification.checks.map((check) => (
@@ -82,8 +132,8 @@ export default function VerifiedFlightCard({ trip }) {
       {demo ? (
         <View style={styles.demo}>
           <AppText variant="caption" style={styles.demoText}>
-            Demo verification: FlyPool checks the file type and that your flight details are consistent. It doesn’t
-            read the document or confirm your booking with the airline yet.
+            Demo verification: FlyPool read your ticket and checked that it shows your name, this flight number, your
+            travel date and Mumbai. It can’t tell whether a ticket is genuine - nothing was confirmed with the airline.
           </AppText>
         </View>
       ) : null}

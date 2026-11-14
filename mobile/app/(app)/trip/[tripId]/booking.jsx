@@ -8,6 +8,7 @@ import { ActivityIndicator, Animated, View } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import AppHeader from '../../../../src/components/AppHeader';
 import AppText from '../../../../src/components/AppText';
+import TravellerProfile from '../../../../src/components/TravellerProfile';
 import Alert from '../../../../src/components/Alert';
 import Button from '../../../../src/components/Button';
 import FareBreakdown from '../../../../src/components/FareBreakdown';
@@ -15,7 +16,7 @@ import FlightCode from '../../../../src/components/FlightCode';
 import FormScreen from '../../../../src/components/FormScreen';
 import SummaryCard, { SummaryRow } from '../../../../src/components/SummaryCard';
 import { CheckIcon } from '../../../../src/components/icons';
-import { getTrip } from '../../../../src/api/trips.api';
+import { getRide, getTrip } from '../../../../src/api/trips.api';
 import { useAuth } from '../../../../src/auth/authContext';
 import { startNewTrip, stepHref } from '../../../../src/navigation/tripSteps';
 import { formatDate, formatTime } from '../../../../src/shared/dates';
@@ -50,14 +51,16 @@ export default function BookingConfirmationScreen() {
   const { tripId } = useLocalSearchParams();
   const { user } = useAuth();
   const [trip, setTrip] = useState(null);
+  const [ride, setRide] = useState(null); // live: who's in the shared ride now, with the profiles they share
   const [error, setError] = useState(null);
 
   const load = useCallback(
     () =>
-      getTrip(tripId).then(
-        (t) => {
+      Promise.all([getTrip(tripId), getRide(tripId).then((r) => r.ride, () => null)]).then(
+        ([t, r]) => {
           setError(null);
           setTrip(t);
+          setRide(r);
         },
         setError,
       ),
@@ -156,6 +159,15 @@ export default function BookingConfirmationScreen() {
                   />
                 ))}
                 <AppText variant="caption">Who was in your shared ride when you booked.</AppText>
+                {ride?.pool?.others?.length ? (
+                  <View style={styles.ridingWith} testID="booking-riding-with">
+                    <AppText variant="overline">Riding with</AppText>
+                    {ride.pool.others.map((m, i) => (
+                      <TravellerProfile key={i} profile={m.profile} fallback={`Traveller ${i + 1}`} testID="booking-other-profile" />
+                    ))}
+                    <AppText variant="caption">Names, ages and identity status are shown only if each passenger chose to share them.</AppText>
+                  </View>
+                ) : null}
               </>
             )}
           </SummaryCard>
@@ -194,6 +206,7 @@ export default function BookingConfirmationScreen() {
 }
 
 const useStyles = makeStyles((colors) => ({
+  ridingWith: { gap: spacing[2], marginTop: spacing[2] },
   center: { textAlign: 'center' },
   loading: { marginTop: spacing[10] },
   gap: { gap: spacing[4] },

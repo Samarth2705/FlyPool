@@ -76,7 +76,7 @@ export default function SuggestionInput({ label, name, value, onChange, suggesti
             id={listId}
             role="listbox"
             aria-label={`${label} suggestions`}
-            className="absolute top-full right-0 left-0 z-20 mt-1.5 max-h-64 overflow-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 py-1.5 shadow-xl shadow-slate-200/70 dark:shadow-black/30"
+            className="absolute top-full right-0 left-0 z-20 mt-1.5 max-h-64 overflow-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 py-1 shadow-lg shadow-slate-900/10 dark:shadow-black/30"
           >
             {matches.map((suggestion, index) => (
               <li
@@ -91,14 +91,14 @@ export default function SuggestionInput({ label, name, value, onChange, suggesti
                 }}
                 onMouseEnter={() => setActiveIndex(index)}
                 className={`flex cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-slate-700 dark:text-slate-200 ${
-                  index === activeIndex ? 'bg-sky-50 dark:bg-sky-950/50 text-sky-800 dark:text-sky-200' : ''
+                  index === activeIndex ? 'bg-brand-50 dark:bg-brand-950/50 text-brand-800 dark:text-brand-200' : ''
                 }`}
               >
-                <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 fill-slate-400 dark:fill-slate-500" aria-hidden="true">
+                <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 fill-slate-500 dark:fill-slate-400" aria-hidden="true">
                   <path d="M10 2a6 6 0 0 0-6 6c0 4.5 6 10 6 10s6-5.5 6-10a6 6 0 0 0-6-6Zm0 8.2A2.2 2.2 0 1 1 10 5.8a2.2 2.2 0 0 1 0 4.4Z" />
                 </svg>
                 <span>{suggestion}</span>
-                <span className="ml-auto text-xs text-slate-400 dark:text-slate-500">Mumbai</span>
+                <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">Mumbai</span>
               </li>
             ))}
           </ul>

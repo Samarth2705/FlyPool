@@ -4,8 +4,6 @@
 //
 // Every trip and account here is created by the server; nothing it returns
 // is mocked. Only the phone's native modules are stand-ins (test/setup.js).
-import fs from 'node:fs';
-import path from 'node:path';
 import { Alert, StyleSheet } from 'react-native';
 import { screen } from 'expo-router/testing-library';
 import * as SecureStore from 'expo-secure-store';
@@ -13,10 +11,10 @@ import api from '../src/api/client';
 import { darkColors, lightColors } from '../src/theme';
 import { addDays, todayInMumbai } from '../src/shared/dates';
 import { launchApp, press, signedInUser, storedSession, typeInto, waitFor } from './helpers';
+import { ticketFor } from './tickets';
 
 const network = globalThis.network;
 const AIRPORT = 'Chhatrapati Shivaji Maharaj International Airport, Mumbai';
-const PDF = fs.readFileSync(path.join(__dirname, 'fixtures', 'e-ticket.pdf'));
 const EMPTY_TRIPS = 'You haven’t planned any trips yet. Start planning your first FlyPool ride!';
 const auth = (user) => ({ headers: { Authorization: `Bearer ${user.token}` } });
 const homeShown = () => screen.findByText('Where are you headed?');
@@ -41,7 +39,7 @@ async function verifyTrip(user, trip) {
     airline: 'IndiGo',
     flightNumber: '6E 2134',
     scheduledArrivalTime: trip.expectedArrivalTime,
-    document: { mimeType: 'application/pdf', dataBase64: PDF.toString('base64') },
+    document: await ticketFor(user.token, trip),
   };
   return (await api.post(`/trips/${trip.id}/verification`, body, auth(user))).data.data.trip;
 }
@@ -155,10 +153,10 @@ test('the trip steps show the current step, open finished ones and lock later on
   expect(screen).toHavePathname(`/trip/${trip.id}/verify`);
 
   await press(step(1));
-  await screen.findByTestId('destination-input'); // the form, filled in (not just the loading title)
+  await screen.findByTestId('destination-field'); // the form, filled in (not just the loading title)
   expect(screen.getByText('Your trip details')).toBeTruthy();
   expect(screen).toHavePathname(`/trip/${trip.id}/details`);
-  expect(screen.getByTestId('destination-input').props.value).toBe('Powai');
+  expect(screen.getByLabelText('Destination: Powai')).toBeTruthy();
   expect(step(1).props.accessibilityState.selected).toBe(true);
 
   await press(step(2));
@@ -216,9 +214,9 @@ test('My Trips lists the user’s real trips, current and previous, with status 
 
   // Tapping a trip opens its details, from where the workflow continues
   await press(screen.getByLabelText(new RegExp('^Trip to Juhu')));
-  await screen.findByTestId('destination-input');
+  await screen.findByTestId('destination-field');
   expect(screen).toHavePathname(`/trip/${pending.id}/details`);
-  expect(screen.getByTestId('destination-input').props.value).toBe('Juhu');
+  expect(screen.getByLabelText('Destination: Juhu')).toBeTruthy();
 
   await press(screen.getByLabelText('Back'));
   await press(await screen.findByLabelText(new RegExp('^Trip to Andheri East')));
@@ -282,7 +280,7 @@ test('dark mode from the menu applies at once, on every screen, and is saved on 
     await ready();
     expect(screenBackgrounds()).toEqual([darkColors.background]);
   };
-  await visit(() => press(screen.getByTestId('step-1')), () => screen.findByTestId('destination-input'));
+  await visit(() => press(screen.getByTestId('step-1')), () => screen.findByTestId('destination-field'));
   await visit(async () => press((await openMenu(user)) && screen.getByTestId('menu-trips')), () => screen.findByTestId('trips-upcoming'));
   await visit(async () => press((await openMenu(user)) && screen.getByTestId('menu-profile')), () => screen.findByTestId('profile-email'));
   await visit(async () => press((await openMenu(user)) && screen.getByTestId('menu-settings')), () => screen.findByText('Appearance'));
@@ -343,16 +341,17 @@ test('Settings: System / Light / Dark switch the theme at once and are saved', a
 
 // ---- 6, 7. Profile and Settings ------------------------------------------------
 
-test('Profile shows the server’s details for this user, read only', async () => {
+test('Profile shows the server’s details for this user; account details are read only', async () => {
   const user = await signedInUser();
   await launchApp('/profile');
   expect(await screen.findByTestId('profile-name')).toHaveTextContent(user.name);
   expect(screen.getByTestId('profile-email')).toHaveTextContent(user.email);
   expect(screen.getByTestId('profile-phone')).toHaveTextContent(`+91 ${user.phone.slice(0, 5)} ${user.phone.slice(5)}`);
   expect(network.requests.filter((r) => r.url === '/auth/me').at(-1).authorization).toBe(`Bearer ${user.token}`);
-  // No profile-update endpoint exists, so nothing pretends to edit
-  expect(screen.queryByText(/^Edit/)).toBeNull();
-  expect(screen.getByText('Changing your profile details isn’t available in the app yet.')).toBeTruthy();
+  expect(network.requests.filter((r) => r.url === '/profile').at(-1).authorization).toBe(`Bearer ${user.token}`);
+  // Email and phone can't be edited (and are never shown to others); the traveller profile can (test/profiles.test.js)
+  expect(screen.getByText('Never shown to other passengers.')).toBeTruthy();
+  expect(screen.getByTestId('profile-name-input').props.value).toBe(user.name);
 });
 
 test('Settings: profile link, app information and logout (then logging in again)', async () => {

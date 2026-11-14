@@ -1,6 +1,6 @@
 // Page 4: compact summary of the passenger's own flight and trip.
 import { PlaneIcon, CalendarIcon, MapPinIcon, UsersIcon, CheckCircleIcon } from '../ui/icons';
-import { MUMBAI_AIRPORT } from '../../data/mumbaiLocations';
+import { airportOf } from '../../data/mumbaiLocations';
 import { formatDate, formatTime } from '../../utils/dates';
 import { formatFlightNumber } from '../../utils/format';
 
@@ -19,7 +19,7 @@ function Item({ icon: Icon, label, children }) {
 }
 
 export default function FlightSummaryCard({ trip }) {
-  const fromAirport = trip.pickupLocation === MUMBAI_AIRPORT.name;
+  const fromAirport = Boolean(airportOf(trip));
   const isDemo = trip.verification?.method?.startsWith('demo');
 
   return (
@@ -35,7 +35,7 @@ export default function FlightSummaryCard({ trip }) {
           {formatDate(trip.travelDate)} · {formatTime(trip.expectedArrivalTime)}
         </Item>
         <Item icon={MapPinIcon} label={fromAirport ? 'Airport → drop-off' : 'Pickup → drop-off'}>
-          {fromAirport ? `BOM ${trip.pickupTerminal ?? ''}` : trip.pickupLocation} → {trip.destination}
+          {fromAirport ? `${airportOf(trip).code} ${trip.pickupTerminal ?? ''}` : trip.pickupLocation} → {trip.destination}
         </Item>
         <Item icon={UsersIcon} label="Travelling together">
           {trip.passengerCount} {trip.passengerCount === 1 ? 'person' : 'people'} · {trip.luggageCount}{' '}

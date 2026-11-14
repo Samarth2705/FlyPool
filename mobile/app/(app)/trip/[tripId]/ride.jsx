@@ -23,6 +23,9 @@ import { ActivityIndicator, LayoutAnimation, View } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import AppHeader from '../../../../src/components/AppHeader';
 import AppText from '../../../../src/components/AppText';
+import TravellerProfile from '../../../../src/components/TravellerProfile';
+import LiveActivity from '../../../../src/components/LiveActivity';
+import { useLiveRide } from '../../../../src/live/useLiveRide';
 import Alert from '../../../../src/components/Alert';
 import Button from '../../../../src/components/Button';
 import Card from '../../../../src/components/Card';
@@ -48,7 +51,7 @@ const MODE_LABELS = { shared: 'Pool with others', solo: 'Travel alone' };
 const STALE_CODES = ['POOL_FULL', 'POOL_UNAVAILABLE', 'POOL_INCOMPATIBLE', 'POOL_CHANGED', 'POOL_NOT_FOUND', 'VEHICLE_MISMATCH'];
 
 const REASONS = {
-  custom_pickup: 'Pooling is only available for pickups at Mumbai Airport, so this trip can travel alone.',
+  custom_pickup: 'Pooling is only available for pickups at Mumbai Airport or Navi Mumbai Airport, so this trip can travel alone.',
   expired: 'This flight has already landed, so its ride can no longer be changed.',
 };
 
@@ -107,16 +110,19 @@ function TripStrip({ trip, travellers, selection }) {
 }
 
 // One traveller in a shared ride: area, group, flight, landing time - never a name
-function PoolMember({ member }) {
+function PoolMember({ member, index }) {
   const styles = useStyles();
   return (
     <View style={styles.member}>
       <UserIcon size={16} />
+      <View style={styles.flex}>
+      <TravellerProfile profile={member.profile} fallback={`Traveller ${index + 1}`} testID="pool-member-profile" />
       <AppText variant="small" style={styles.flex}>
         {member.area ?? 'Your destination'} · {plural(member.partySize, 'person', 'people')} ·{' '}
         {member.flightNumber ? formatFlightNumber(member.flightNumber) : 'flight'}
         {member.sameFlight ? ' (your flight)' : ''} · lands {landsRelative(member.minutesApart).toLowerCase()}
       </AppText>
+      </View>
     </View>
   );
 }
@@ -135,10 +141,19 @@ function PoolOption({ pool, selected, onPress, mine, partySize }) {
         {mine ? 'Your shared ride' : 'Join this shared ride'} · {plural(pool.others.length, 'other booking', 'other bookings')}
       </AppText>
       {pool.others.length ? (
-        pool.others.map((m, i) => <PoolMember key={i} member={m} />)
+        pool.others.map((m, i) => <PoolMember key={i} member={m} index={i} />)
       ) : (
         <AppText variant="small">Nobody else yet - compatible travellers can join you.</AppText>
       )}
+      {pool.full ? (
+        <AppText variant="label" style={styles.seatAlert} testID="pool-full">
+          This shared ride is full.
+        </AppText>
+      ) : pool.seatsLeft === 1 ? (
+        <AppText variant="label" style={styles.seatAlert} testID="pool-last-seat">
+          Only 1 seat remaining in this shared ride.
+        </AppText>
+      ) : null}
       <AppText variant="caption" style={styles.poolMeta}>
         {plural(pool.seatsTaken, 'seat', 'seats')} of {pool.seats} taken
         {mine ? '' : ` · ${plural(Math.max(0, seatsAfter), 'seat', 'seats')} left after you join`}
@@ -256,6 +271,10 @@ export default function RideSelectionScreen() {
     }, [load]),
   );
 
+  // While in view: other passengers choosing now, and new / changed shared
+  // rides (checked about every 4 s - when shared rides change, reload)
+  const live = useLiveRide(tripId, { onPoolsChanged: load });
+
   function update(changes) {
     animate();
     const next = { mode, vehicleType, poolChoice, ...changes };
@@ -357,11 +376,14 @@ export default function RideSelectionScreen() {
     setSubmitError(null);
     setNotice('');
     try {
-      await chooseRide(tripId, choice);
+      const saved = await chooseRide(tripId, choice);
       clearRideDraft(tripId);
       await load(); // what the server saved (shown when coming back here)
       setEditing(false);
-      router.push(stepHref(5, tripId)); // on to the Booking Summary
+      // "Start a shared ride" when a compatible one had just been started: the
+      // server joined it instead of making a duplicate - say so on the summary
+      const summary = stepHref(5, tripId);
+      router.push(saved?.outcome === 'joined_existing' ? { ...summary, params: { ...summary.params, joined: '1' } } : summary);
     } catch (error) {
       if (error.status === 401) return; // the session ended: the login screen takes over
       setSubmitError(error);
@@ -386,6 +408,7 @@ export default function RideSelectionScreen() {
         {showSaved ? 'Your ride' : 'Choose your ride'}
       </AppText>
 
+      <LiveActivity live={live} />
       <TripStrip trip={trip} travellers={travellers.length} selection={showSaved ? `${MODE_LABELS[ride.mode]} · ${ride.vehicle?.label ?? ride.vehicleType}` : selectionText} />
 
       {showSaved ? (
@@ -592,6 +615,7 @@ export default function RideSelectionScreen() {
 }
 
 const useStyles = makeStyles((colors) => ({
+  seatAlert: { marginTop: spacing[2] },
   flex: { flex: 1 },
   center: { textAlign: 'center' },
   title: { marginBottom: spacing[4] },

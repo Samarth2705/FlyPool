@@ -176,7 +176,7 @@ export default function SettingsScreen() {
         <InfoRow label="App version" value={Constants.expoConfig?.version ?? '1.0.0'} />
         <InfoRow label="Server" value={server} />
         <AppText variant="caption" style={styles.note}>
-          Share the cab home from Mumbai Airport with verified travellers on similar flights.
+          Share the cab home from Mumbai or Navi Mumbai Airport with verified travellers on similar flights.
         </AppText>
       </Card>
 

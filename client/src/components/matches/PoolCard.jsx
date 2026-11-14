@@ -1,77 +1,91 @@
-// Page 4: one shared ride (pool) as a selectable radio card - who is in it,
-// seats left and the estimated fare per person. Also used for "Start a new
-// shared ride" (pool = null).
+// Step 3: one shared ride (pool) as a selectable radio card - who is in it,
+// seats and bags left and the estimated fare per person. Also used for
+// "Start a new shared ride" (pool = null).
+import ChoiceCard from '../ui/ChoiceCard';
+import Badge from '../ui/Badge';
 import { formatRupees } from '../../utils/format';
+import { poolStatusOf, seatsText } from '../../live/useLiveRide';
+import { profileLine } from '../../utils/profiles';
 
-function SeatBar({ taken, seats }) {
+function CapacityBar({ label, taken, total }) {
   return (
-    <span className="mt-2 flex gap-1" aria-hidden="true">
-      {Array.from({ length: seats }, (_, i) => (
-        <span key={i} className={`h-1.5 flex-1 rounded-full ${i < taken ? 'bg-sky-500' : 'bg-slate-200 dark:bg-slate-700'}`} />
-      ))}
+    <span className="block min-w-0">
+      <span className="tabular flex justify-between text-xs text-slate-600 dark:text-slate-400">
+        <span>{label}</span>
+        <span>
+          {taken}/{total}
+        </span>
+      </span>
+      <span className="mt-1 flex gap-0.5" aria-hidden="true">
+        {Array.from({ length: total }, (_, i) => (
+          <span key={i} className={`h-1.5 flex-1 rounded-sm ${i < taken ? 'bg-brand-500' : 'bg-slate-200 dark:bg-slate-700'}`} />
+        ))}
+      </span>
     </span>
   );
 }
 
-export default function PoolCard({ pool, vehicleLabel, title, description, selected, onSelect, badge }) {
+export default function PoolCard({ pool, vehicleLabel, title, description, selected, onSelect, badge, disabled }) {
   const fare = pool?.fare;
 
   return (
-    <label
-      className={`block cursor-pointer rounded-2xl border bg-white p-4 transition has-focus-visible:ring-4 has-focus-visible:ring-sky-100 dark:bg-slate-900 dark:has-focus-visible:ring-sky-900 ${
-        selected
-          ? 'border-sky-500 ring-1 ring-sky-500'
-          : 'border-slate-200 hover:border-slate-300 dark:border-slate-700 dark:hover:border-slate-600'
-      }`}
-    >
-      <input type="radio" name="shared-ride" checked={selected} onChange={onSelect} className="sr-only" />
-      <span className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+    <ChoiceCard name="shared-ride" value={pool?.id ?? 'new'} checked={selected} onChange={onSelect} disabled={disabled}>
+      <span className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
         <span className="flex flex-wrap items-center gap-2">
           <span className="font-semibold text-slate-900 dark:text-white">{title}</span>
-          {badge && (
-            <span className="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">
-              {badge}
-            </span>
-          )}
+          {badge && <Badge tone="solid">{badge}</Badge>}
         </span>
         {fare && (
-          <span className="text-sm text-slate-500 dark:text-slate-400">
-            <span className="text-lg font-bold text-slate-900 dark:text-white">{formatRupees(fare.perPerson.max)}</span> est. /
-            person
+          <span className="text-sm text-slate-600 dark:text-slate-400">
+            <span className="tabular text-lg font-bold text-slate-900 dark:text-white">{formatRupees(fare.perPerson.max)}</span>{' '}
+            est. / person
           </span>
         )}
       </span>
 
-      {description && <span className="mt-1 block text-sm text-slate-500 dark:text-slate-400">{description}</span>}
+      {description && <span className="mt-1 block text-sm text-slate-600 dark:text-slate-400">{description}</span>}
 
       {pool && (
         <>
-          <span className="mt-2 block text-sm text-slate-600 dark:text-slate-300">
-            {vehicleLabel} · {pool.seatsTaken} of {pool.seats} seats taken · {pool.seatsLeft}{' '}
-            {pool.seatsLeft === 1 ? 'seat' : 'seats'} left · {pool.bagsTaken} of {pool.bags} bags
+          {/* Seats as the server counts them (people, not bookings) */}
+          <span className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="tabular text-sm font-medium text-slate-800 dark:text-slate-200" data-testid="pool-seats">
+              {seatsText(pool)}
+            </span>
+            <Badge tone={poolStatusOf(pool).tone}>{poolStatusOf(pool).label}</Badge>
           </span>
-          <SeatBar taken={pool.seatsTaken} seats={pool.seats} />
+          <span className="sr-only">
+            {vehicleLabel}: {pool.bagsTaken} of {pool.bags} bags.
+          </span>
+          <span className="mt-3 grid grid-cols-2 gap-4" aria-hidden="true">
+            <CapacityBar label="Seats taken" taken={pool.seatsTaken} total={pool.seats} />
+            <CapacityBar label="Bags" taken={pool.bagsTaken} total={pool.bags} />
+          </span>
           {pool.others.length > 0 && (
-            <span className="mt-3 flex flex-wrap gap-2">
-              {pool.others.map((m, i) => (
-                <span
-                  key={i}
-                  className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-                >
-                  {m.area ?? 'Same destination'} · {m.partySize} {m.partySize === 1 ? 'person' : 'people'}
-                  {m.flightNumber ? ` · ${m.flightNumber}` : ''}
-                  {m.isDemo ? ' · sample' : ''}
-                </span>
-              ))}
+            <span className="mt-3 block">
+              <span className="block text-xs font-medium text-slate-600 dark:text-slate-400">Already in this ride</span>
+              <span className="mt-1.5 flex flex-wrap gap-1.5">
+                {pool.others.map((m, i) => (
+                  <span
+                    key={i}
+                    className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                  >
+                    {m.profile?.shared ? `${profileLine(m.profile)} · ` : ''}
+                    {m.area ?? 'Same destination'} · {m.partySize} {m.partySize === 1 ? 'person' : 'people'}
+                    {m.flightNumber ? ` · ${m.flightNumber}` : ''}
+                    {m.isDemo ? ' · sample' : ''}
+                  </span>
+                ))}
+              </span>
             </span>
           )}
           {fare?.savingsPerPerson > 0 && (
-            <span className="mt-2 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+            <Badge tone="success" className="mt-3">
               Save about {formatRupees(fare.savingsPerPerson)} per person vs travelling alone
-            </span>
+            </Badge>
           )}
         </>
       )}
-    </label>
+    </ChoiceCard>
   );
 }

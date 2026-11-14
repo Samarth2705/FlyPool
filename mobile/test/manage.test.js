@@ -3,18 +3,16 @@
 // (GET /trips/:id/booking, POST .../booking/cancel, POST .../booking/leave-pool).
 // Runs for iOS and Android. Every booking, cancellation and pool change is
 // made and checked by the server; nothing is mocked.
-import fs from 'node:fs';
-import path from 'node:path';
 import nodeAxios from 'axios/dist/node/axios.cjs';
 import { router } from 'expo-router';
 import { screen, within } from 'expo-router/testing-library';
 import api from '../src/api/client';
 import { addDays, todayInMumbai } from '../src/shared/dates';
 import { act, launchApp, newUserDetails, press, signedInUser, typeInto, waitFor } from './helpers';
+import { ticketFor } from './tickets';
 
 const network = globalThis.network;
 const AIRPORT = 'Chhatrapati Shivaji Maharaj International Airport, Mumbai';
-const PDF = fs.readFileSync(path.join(__dirname, 'fixtures', 'e-ticket.pdf'));
 
 const randomIp = () => `10.${200 + Math.floor(Math.random() * 50)}.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`;
 const server = nodeAxios.create({
@@ -49,7 +47,7 @@ async function verifiedTrip(token, slot, details = {}) {
     airline: 'IndiGo',
     flightNumber: '6E 2134',
     scheduledArrivalTime: slot.time,
-    document: { mimeType: 'application/pdf', dataBase64: PDF.toString('base64') },
+    document: await ticketFor(token, trip),
   };
   return (await server.post(`/trips/${trip.id}/verification`, verification, as(token))).data.data.trip;
 }

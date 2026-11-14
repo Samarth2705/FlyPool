@@ -27,7 +27,7 @@ function AccountStatus() {
         <span className="text-slate-600 dark:text-slate-300">
           Logged in as <span className="font-medium text-slate-900 dark:text-white">{user.name}</span>
         </span>
-        <button onClick={signOut} className="font-medium text-sky-600 dark:text-sky-400 hover:underline">
+        <button onClick={signOut} className="font-medium text-brand-700 dark:text-brand-300 hover:underline">
           Log out
         </button>
       </div>
@@ -36,11 +36,11 @@ function AccountStatus() {
 
   return (
     <p className="mt-4 text-center text-sm text-slate-500 dark:text-slate-400">
-      <Link to="/login" className="font-medium text-sky-600 dark:text-sky-400 hover:underline">
+      <Link to="/login" className="font-medium text-brand-700 dark:text-brand-300 hover:underline">
         Log in
       </Link>
       {' or '}
-      <Link to="/register" className="font-medium text-sky-600 dark:text-sky-400 hover:underline">
+      <Link to="/register" className="font-medium text-brand-700 dark:text-brand-300 hover:underline">
         create an account
       </Link>
     </p>
@@ -58,7 +58,7 @@ export default function StatusPage() {
   return (
     <PageContainer title="System status" subtitle="Development check for the API, database and login.">
       <div className="divide-y divide-slate-100 dark:divide-slate-800 border-y border-slate-100 dark:border-slate-800">
-        {!health && !error && <p className="py-2 text-slate-400 dark:text-slate-500">Checking server…</p>}
+        {!health && !error && <p className="py-2 text-slate-500 dark:text-slate-400">Checking server…</p>}
         {error && <StatusRow label="API" ok={false} text={error.message} />}
         {health && (
           <>

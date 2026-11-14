@@ -1,7 +1,7 @@
 // Copied from the web app: client/src/utils/trips.js
 // Pure JavaScript shared with the website - keep the two in sync.
 // Display helpers for a trip, shared by the booking pages and My Trips.
-import { MUMBAI_AIRPORT } from './mumbaiLocations';
+import { airportOf } from './mumbaiLocations';
 
 // "1 bag" / "3 bags"
 export function plural(count, one, many) {
@@ -9,19 +9,26 @@ export function plural(count, one, many) {
 }
 
 export function isAirportPickup(trip) {
-  return trip.pickupLocation === MUMBAI_AIRPORT.name;
+  return Boolean(airportOf(trip));
 }
 
-// "Mumbai Airport (BOM) · T2", or the custom pickup point as typed
+// "Mumbai Airport (BOM)" / "Navi Mumbai Airport (NMI)", or null for another pickup point
+export function airportLabel(trip) {
+  return airportOf(trip)?.shortName ?? null;
+}
+
+// "Mumbai Airport (BOM) · T2", "Navi Mumbai Airport (NMI) · T1", or the custom pickup point as typed
 export function pickupLabel(trip) {
-  if (!isAirportPickup(trip)) return trip.pickupLocation;
-  return trip.pickupTerminal ? `${MUMBAI_AIRPORT.shortName} · ${trip.pickupTerminal}` : MUMBAI_AIRPORT.shortName;
+  const airport = airportOf(trip);
+  if (!airport) return trip.pickupLocation;
+  return trip.pickupTerminal ? `${airport.shortName} · ${trip.pickupTerminal}` : airport.shortName;
 }
 
 // "Terminal 2", or null when the terminal isn't known / not an airport pickup
 export function terminalLabel(trip) {
-  if (!isAirportPickup(trip) || !trip.pickupTerminal) return null;
-  return MUMBAI_AIRPORT.terminals.find((t) => t.id === trip.pickupTerminal)?.label ?? trip.pickupTerminal;
+  const airport = airportOf(trip);
+  if (!airport || !trip.pickupTerminal) return null;
+  return airport.terminals.find((t) => t.id === trip.pickupTerminal)?.label ?? trip.pickupTerminal;
 }
 
 // "2 people · 3 bags"

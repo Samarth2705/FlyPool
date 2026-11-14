@@ -82,7 +82,7 @@ export default function CameraCapture({ onCapture, onClose, onUseUpload }) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="camera-title"
-        className="w-full max-w-lg rounded-t-2xl bg-white p-5 shadow-2xl sm:rounded-2xl dark:bg-slate-900"
+        className="w-full max-w-lg rounded-t-xl bg-white p-5 shadow-2xl sm:rounded-xl dark:bg-slate-900"
       >
         <h2 id="camera-title" className="font-semibold text-slate-900 dark:text-white">
           Take a photo of your boarding pass
@@ -91,7 +91,7 @@ export default function CameraCapture({ onCapture, onClose, onUseUpload }) {
           Fit the whole pass or e-ticket in the frame, in good light.
         </p>
 
-        <div className="relative mt-4 aspect-[4/3] overflow-hidden rounded-xl bg-slate-900">
+        <div className="relative mt-4 aspect-[4/3] overflow-hidden rounded-lg bg-slate-900">
           <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-cover" />
           {status === 'starting' && (
             <p className="absolute inset-0 flex items-center justify-center text-sm text-slate-300">Starting camera…</p>
@@ -107,7 +107,7 @@ export default function CameraCapture({ onCapture, onClose, onUseUpload }) {
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700 hover:bg-slate-50 focus-visible:ring-4 focus-visible:ring-sky-100 focus-visible:outline-none dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:ring-sky-900"
+            className="rounded-lg border border-slate-300 px-4 py-2.5 font-medium text-slate-700 hover:bg-slate-50 focus-visible:ring-4 focus-visible:ring-brand-100 focus-visible:outline-none dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:ring-brand-900"
           >
             Cancel
           </button>
@@ -115,7 +115,7 @@ export default function CameraCapture({ onCapture, onClose, onUseUpload }) {
             <button
               type="button"
               onClick={onUseUpload}
-              className="rounded-xl bg-sky-600 px-4 py-2.5 font-semibold text-white hover:bg-sky-700 focus-visible:ring-4 focus-visible:ring-sky-300 focus-visible:outline-none"
+              className="rounded-lg bg-brand-600 px-4 py-2.5 font-semibold text-white hover:bg-brand-700 focus-visible:ring-4 focus-visible:ring-brand-300 focus-visible:outline-none"
             >
               Upload a file instead
             </button>
@@ -125,7 +125,7 @@ export default function CameraCapture({ onCapture, onClose, onUseUpload }) {
               type="button"
               onClick={takePhoto}
               disabled={status !== 'live'}
-              className="flex items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 font-semibold text-white hover:bg-sky-700 focus-visible:ring-4 focus-visible:ring-sky-300 focus-visible:outline-none disabled:opacity-50"
+              className="flex items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 font-semibold text-white hover:bg-brand-700 focus-visible:ring-4 focus-visible:ring-brand-300 focus-visible:outline-none disabled:opacity-50"
             >
               <CameraIcon className="h-5 w-5" />
               Take photo

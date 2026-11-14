@@ -85,7 +85,7 @@ export default function AccountMenu() {
         aria-expanded={open}
         aria-controls="account-menu"
         aria-label={`Account menu for ${user.name}`}
-        className="flex h-10 w-10 items-center justify-center rounded-full bg-sky-100 text-sm font-semibold text-sky-700 transition hover:bg-sky-200 focus-visible:ring-4 focus-visible:ring-sky-200 focus-visible:outline-none active:bg-sky-300 dark:bg-sky-900/60 dark:text-sky-200 dark:hover:bg-sky-900 dark:focus-visible:ring-sky-800"
+        className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-100 text-sm font-semibold text-brand-700 transition hover:bg-brand-200 focus-visible:ring-4 focus-visible:ring-brand-200 focus-visible:outline-none active:bg-brand-300 dark:bg-brand-900/60 dark:text-brand-200 dark:hover:bg-brand-900 dark:focus-visible:ring-brand-800"
       >
         {initialsOf(user.name)}
       </button>
@@ -97,11 +97,11 @@ export default function AccountMenu() {
           role="menu"
           aria-label="Account"
           onKeyDown={handleMenuKeyDown}
-          className="absolute right-0 z-40 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl shadow-slate-200/70 dark:border-slate-700 dark:bg-slate-900 dark:shadow-black/40"
+          className="absolute right-0 z-40 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg shadow-slate-900/10 dark:border-slate-700 dark:bg-slate-900 dark:shadow-black/40"
         >
           {/* Who is logged in (from the existing auth state) */}
           <div className="flex items-center gap-3 px-3 py-3">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-600 text-sm font-semibold text-white">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-600 text-sm font-semibold text-white">
               {initialsOf(user.name)}
             </span>
             <div className="min-w-0">
@@ -120,7 +120,7 @@ export default function AccountMenu() {
               onClick={() => close()}
               className={`${itemClass} text-slate-700 dark:text-slate-200`}
             >
-              <Icon className="h-5 w-5 text-slate-400 dark:text-slate-500" />
+              <Icon className="h-5 w-5 text-slate-500 dark:text-slate-400" />
               {label}
             </Link>
           ))}
@@ -128,7 +128,7 @@ export default function AccountMenu() {
           <div className="my-1 h-px bg-slate-100 dark:bg-slate-800" />
 
           <div role="group" aria-labelledby="appearance-label" className="px-3 py-2">
-            <p id="appearance-label" className="text-xs font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
+            <p id="appearance-label" className="text-xs font-semibold tracking-wider text-slate-500 uppercase dark:text-slate-400">
               Appearance
             </p>
             <div className="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
@@ -140,7 +140,7 @@ export default function AccountMenu() {
                   aria-checked={theme === value}
                   tabIndex={-1}
                   onClick={() => setTheme(value)}
-                  className={`flex flex-col items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium transition focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:outline-none ${
+                  className={`flex flex-col items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium transition focus-visible:ring-2 focus-visible:ring-brand-400 focus-visible:outline-none ${
                     theme === value
                       ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white'
                       : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'

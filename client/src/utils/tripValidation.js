@@ -17,7 +17,8 @@ export function validateTrip(trip, { requireTerminal }) {
   if (pickup.length < 3) errors.pickupLocation = 'Enter a pickup location.';
   if (requireTerminal && !trip.pickupTerminal) errors.pickupTerminal = 'Choose Terminal 1 or Terminal 2.';
 
-  if (destination.length < 2) errors.destination = 'Enter your destination.';
+  // Under "Others" the passenger types the place - "Others" itself is not a destination
+  if (destination.length < 2 || /^others?$/i.test(destination)) errors.destination = 'Enter your destination.';
   else if (destination.toLowerCase() === pickup.toLowerCase()) {
     errors.destination = 'Destination must be different from the pickup location.';
   }

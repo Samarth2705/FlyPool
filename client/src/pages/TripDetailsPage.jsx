@@ -1,23 +1,29 @@
-// Page 2: Trip Details & Travel Preferences.
+// Booking step 1: Trip Details & Travel Preferences.
 // Also used at /trip/:tripId/edit to change an existing trip's details
 // (only before its flight is verified) - the trip keeps its id.
 // The passenger enters pickup, destination, date, arrival time and party size.
 // On "Continue" the trip is checked, saved through the API (POST /api/trips)
-// and the passenger moves on to /trip/:tripId/verify (Page 3).
-import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
-import { AnimatePresence, motion } from 'framer-motion';
+// and the passenger moves on to /trip/:tripId/verify (step 2).
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router';
 import AppLayout from '../components/layout/AppLayout';
 import TextField from '../components/ui/TextField';
-import SuggestionInput from '../components/ui/SuggestionInput';
 import NumberStepper from '../components/ui/NumberStepper';
 import Switch from '../components/ui/Switch';
-import Button from '../components/ui/Button';
-import Spinner from '../components/ui/Spinner';
+import Button, { LinkButton } from '../components/ui/Button';
+import Card from '../components/ui/Card';
+import Alert from '../components/ui/Alert';
+import PageHeader from '../components/ui/PageHeader';
+import LoadingState from '../components/ui/LoadingState';
+import ErrorState from '../components/ui/ErrorState';
+import TripSnapshot from '../components/trip/TripSnapshot';
+import DestinationSelect from '../components/trip/DestinationSelect';
+import { ArrowRightIcon, LuggageIcon, PlaneIcon, UsersIcon } from '../components/ui/icons';
 import { createTrip, getTrip, updateTrip } from '../api/trips.api';
-import { MUMBAI_AIRPORT, POPULAR_DESTINATIONS } from '../data/mumbaiLocations';
+import { AIRPORTS, MUMBAI_AIRPORT, airportByName, listedDestination } from '../data/mumbaiLocations';
 import { validateTrip, MAX_PASSENGERS, MAX_LUGGAGE } from '../utils/tripValidation';
 import { todayInMumbai, addDays, formatDate, formatTime } from '../utils/dates';
+import { plural } from '../utils/trips';
 
 const EMPTY_TRIP = {
   pickupLocation: MUMBAI_AIRPORT.name,
@@ -31,167 +37,252 @@ const EMPTY_TRIP = {
 };
 
 // Order used to move keyboard focus to the first field with an error
-const FIELD_ORDER = ['pickupLocation', 'pickupTerminal', 'destination', 'travelDate', 'expectedArrivalTime'];
+const FIELD_ORDER = [
+  'pickupLocation',
+  'pickupTerminal',
+  'destination',
+  'travelDate',
+  'expectedArrivalTime',
+  'passengerCount',
+  'luggageCount',
+];
 
-function SectionTitle({ children }) {
-  return <legend className="mb-3 text-xs font-semibold tracking-wider text-slate-400 dark:text-slate-500 uppercase">{children}</legend>;
+// A numbered group of fields: "1  Pickup"
+function FormSection({ number, title, description, children }) {
+  return (
+    <fieldset className="border-t border-slate-100 pt-6 first:border-t-0 first:pt-0 dark:border-slate-800">
+      <legend className="sr-only">{title}</legend>
+      <div className="mb-4 flex items-start gap-3" aria-hidden="true">
+        <span className="tabular flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white dark:bg-slate-100 dark:text-slate-900">
+          {number}
+        </span>
+        <div>
+          <p className="font-semibold text-slate-900 dark:text-white">{title}</p>
+          {description && <p className="text-sm text-slate-600 dark:text-slate-400">{description}</p>}
+        </div>
+      </div>
+      {children}
+    </fieldset>
+  );
 }
 
-function AirportPickup({ terminal, onTerminalChange, error, onUseCustom }) {
+const textLink =
+  'rounded text-sm font-medium text-brand-700 hover:underline focus-visible:ring-2 focus-visible:ring-brand-400 focus-visible:outline-none dark:text-brand-300';
+
+// The selectable cards used for airports and terminals
+const choiceCard = (selected, error) =>
+  `cursor-pointer rounded-lg border px-3.5 py-3 transition has-focus-visible:ring-4 has-focus-visible:ring-brand-100 dark:has-focus-visible:ring-brand-900 ${
+    selected
+      ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600 dark:border-brand-400 dark:bg-brand-950/50 dark:ring-brand-400'
+      : error
+        ? 'border-rose-500 bg-white dark:bg-slate-900'
+        : 'border-slate-300 bg-white hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-slate-600'
+  }`;
+
+function AirportPickup({ airport, onAirportChange, terminal, onTerminalChange, error, onUseCustom }) {
   return (
-    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/40 p-4">
-      <div className="flex items-start gap-3">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-100 dark:bg-sky-900/60 text-sky-700 dark:text-sky-400">
-          <svg viewBox="0 0 24 24" className="h-5 w-5 rotate-45 fill-current" aria-hidden="true">
-            <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z" />
-          </svg>
-        </span>
-        <div className="min-w-0">
-          <p className="font-medium text-slate-900 dark:text-white">{MUMBAI_AIRPORT.name}</p>
-          <p className="text-sm text-slate-500 dark:text-slate-400">Pickup at the arrivals area</p>
-        </div>
+    <div>
+      <p id="airport-label" className="text-sm font-medium text-slate-800 dark:text-slate-200">
+        Which airport do you land at?
+      </p>
+      <div role="radiogroup" aria-labelledby="airport-label" className="mt-1.5 grid gap-2 sm:grid-cols-2">
+        {AIRPORTS.map((a) => (
+          <label key={a.code} className={choiceCard(airport.code === a.code, false)}>
+            <input
+              type="radio"
+              id={`airport-${a.code}`}
+              name="airport"
+              value={a.code}
+              checked={airport.code === a.code}
+              onChange={() => onAirportChange(a)}
+              className="sr-only"
+            />
+            <span className="flex items-center gap-2.5">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ink text-taxi">
+                <PlaneIcon className="h-4 w-4" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-slate-900 dark:text-white">{a.shortName}</span>
+                <span className="block text-xs text-slate-600 dark:text-slate-400">Pickup at the arrivals area</span>
+              </span>
+            </span>
+          </label>
+        ))}
       </div>
 
-      <div className="mt-4">
-        <p id="terminal-label" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-          Arrival terminal
+      {airport.terminals.length === 1 ? (
+        <p className="mt-4 rounded-lg bg-slate-50 px-3.5 py-3 text-sm text-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+          <span className="font-semibold">{airport.terminals[0].label}</span> - {airport.shortName} has one terminal, so there&apos;s
+          nothing to choose.
         </p>
-        <div role="radiogroup" aria-labelledby="terminal-label" className="mt-1.5 grid grid-cols-2 gap-2">
-          {MUMBAI_AIRPORT.terminals.map((t) => (
-            <label
-              key={t.id}
-              className={`cursor-pointer rounded-xl border bg-white dark:bg-slate-900 px-3.5 py-2.5 transition has-focus-visible:ring-4 has-focus-visible:ring-sky-100 ${
-                terminal === t.id ? 'border-sky-500 bg-sky-50/60 dark:bg-sky-950/50 ring-1 ring-sky-500' : error ? 'border-rose-400' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
-              }`}
-            >
-              <input
-                type="radio"
-                id={`terminal-${t.id}`}
-                name="pickupTerminal"
-                value={t.id}
-                checked={terminal === t.id}
-                onChange={() => onTerminalChange(t.id)}
-                className="sr-only"
-              />
-              <span className="block text-sm font-semibold text-slate-900 dark:text-white">{t.label}</span>
-              <span className="block text-xs text-slate-500 dark:text-slate-400">{t.note}</span>
-            </label>
-          ))}
+      ) : (
+      <div className="mt-4">
+        <p id="terminal-label" className="text-sm font-medium text-slate-800 dark:text-slate-200">
+          Which terminal do you land at?
+        </p>
+        <div
+          role="radiogroup"
+          aria-labelledby="terminal-label"
+          aria-describedby={error ? 'terminal-error' : undefined}
+          className="mt-1.5 grid grid-cols-2 gap-2"
+        >
+          {airport.terminals.map((t) => {
+            const selected = terminal === t.id;
+            return (
+              <label key={t.id} className={choiceCard(selected, error)}>
+                <input
+                  type="radio"
+                  id={`terminal-${t.id}`}
+                  name="pickupTerminal"
+                  value={t.id}
+                  checked={selected}
+                  onChange={() => onTerminalChange(t.id)}
+                  className="sr-only"
+                />
+                <span className="block text-sm font-semibold text-slate-900 dark:text-white">{t.label}</span>
+                <span className="block text-xs text-slate-600 dark:text-slate-400">{t.note}</span>
+              </label>
+            );
+          })}
         </div>
-        {error && <p className="mt-1.5 text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && (
+          <p id="terminal-error" className="mt-1.5 text-sm font-medium text-rose-700 dark:text-rose-400">
+            {error}
+          </p>
+        )}
+        <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">It&apos;s printed on your ticket or boarding pass.</p>
       </div>
+      )}
 
-      <button type="button" onClick={onUseCustom} className="mt-2 inline-block py-2 text-sm font-medium text-sky-700 dark:text-sky-400 hover:underline">
-        Pick up from somewhere else
+      <button type="button" onClick={onUseCustom} className={`mt-3 py-1 ${textLink}`}>
+        Not at the airport? Use another pickup point
       </button>
+    </div>
+  );
+}
+
+// Quick picks under the date field
+function DateShortcuts({ today, value, onPick }) {
+  const options = [
+    { label: 'Today', date: today },
+    { label: 'Tomorrow', date: addDays(today, 1) },
+  ];
+  return (
+    <div className="mt-2 flex gap-2">
+      {options.map(({ label, date }) => (
+        <button
+          key={label}
+          type="button"
+          onClick={() => onPick(date)}
+          aria-pressed={value === date}
+          className={`rounded-md border px-3 py-1.5 text-sm font-medium transition focus-visible:ring-4 focus-visible:ring-brand-100 focus-visible:outline-none dark:focus-visible:ring-brand-900 ${
+            value === date
+              ? 'border-brand-600 bg-brand-50 text-brand-800 dark:border-brand-400 dark:bg-brand-950/50 dark:text-brand-200'
+              : 'border-slate-300 text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:text-slate-300'
+          }`}
+        >
+          {label}
+        </button>
+      ))}
     </div>
   );
 }
 
 // Desktop sidebar: a live summary of what the passenger has entered so far
 function TripSummary({ trip, customPickup }) {
-  const pickup = customPickup ? trip.pickupLocation.trim() || 'Pickup point' : MUMBAI_AIRPORT.shortName;
+  const pickup = customPickup ? trip.pickupLocation.trim() || 'Pickup point' : (airportByName(trip.pickupLocation) ?? MUMBAI_AIRPORT).shortName;
   const terminal = !customPickup && trip.pickupTerminal ? ` · ${trip.pickupTerminal}` : '';
+  const muted = 'text-slate-500 dark:text-slate-400';
 
   return (
-    <aside className="hidden lg:block">
-      <div className="sticky top-44 rounded-2xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm">
-        <h2 className="font-semibold text-slate-900 dark:text-white">Your trip</h2>
+    <aside className="hidden lg:block" aria-label="Trip summary">
+      <Card className="sticky top-40">
+        <p className="text-xs font-semibold tracking-wider text-slate-500 uppercase dark:text-slate-400">Your trip so far</p>
 
-        <ol className="mt-5 space-y-5">
+        <ol className="mt-4 space-y-4">
           <li className="relative flex gap-3">
-            <span className="mt-1 h-3 w-3 shrink-0 rounded-full border-2 border-sky-600 bg-white dark:bg-slate-900" />
-            <span className="absolute top-5 left-[5px] h-[calc(100%+0.5rem)] w-0.5 bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
+            <span className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full border-2 border-brand-600 bg-white dark:bg-slate-900" />
+            <span className="absolute top-5 left-[4px] h-[calc(100%-0.25rem)] w-0.5 bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
             <div className="min-w-0">
-              <p className="text-xs text-slate-400 dark:text-slate-500">Pickup</p>
-              <p className="truncate font-medium text-slate-800 dark:text-slate-200">
+              <p className="text-xs text-slate-500 dark:text-slate-400">Pickup</p>
+              <p className="truncate font-medium text-slate-900 dark:text-slate-100">
                 {pickup}
                 {terminal}
               </p>
             </div>
           </li>
           <li className="flex gap-3">
-            <span className="mt-1 h-3 w-3 shrink-0 rounded-full bg-sky-600" />
+            <span className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-brand-600" />
             <div className="min-w-0">
-              <p className="text-xs text-slate-400 dark:text-slate-500">Drop-off</p>
-              <p className={`truncate font-medium ${trip.destination.trim() ? 'text-slate-800 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500'}`}>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Drop-off</p>
+              <p className={`truncate font-medium ${trip.destination.trim() ? 'text-slate-900 dark:text-slate-100' : muted}`}>
                 {trip.destination.trim() || 'Not chosen yet'}
               </p>
             </div>
           </li>
         </ol>
 
-        <dl className="mt-6 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-slate-100 dark:border-slate-800 pt-5 text-sm">
+        <dl className="tabular mt-5 grid grid-cols-2 gap-x-4 gap-y-2.5 border-t border-slate-100 pt-4 text-sm dark:border-slate-800">
           <dt className="text-slate-500 dark:text-slate-400">Date</dt>
-          <dd className="text-right font-medium text-slate-800 dark:text-slate-200">{formatDate(trip.travelDate) || '—'}</dd>
-          <dt className="text-slate-500 dark:text-slate-400">Arrival</dt>
-          <dd className="text-right font-medium text-slate-800 dark:text-slate-200">{formatTime(trip.expectedArrivalTime) || '—'}</dd>
-          <dt className="text-slate-500 dark:text-slate-400">Passengers</dt>
-          <dd className="text-right font-medium text-slate-800 dark:text-slate-200">{trip.passengerCount}</dd>
-          <dt className="text-slate-500 dark:text-slate-400">Bags</dt>
-          <dd className="text-right font-medium text-slate-800 dark:text-slate-200">{trip.luggageCount}</dd>
+          <dd className={`text-right font-medium ${trip.travelDate ? 'text-slate-900 dark:text-slate-100' : muted}`}>
+            {formatDate(trip.travelDate) || '—'}
+          </dd>
+          <dt className="text-slate-500 dark:text-slate-400">Lands</dt>
+          <dd className={`text-right font-medium ${trip.expectedArrivalTime ? 'text-slate-900 dark:text-slate-100' : muted}`}>
+            {formatTime(trip.expectedArrivalTime) || '—'}
+          </dd>
+          <dt className="text-slate-500 dark:text-slate-400">Travelling</dt>
+          <dd className="text-right font-medium text-slate-900 dark:text-slate-100">
+            {plural(trip.passengerCount, 'person', 'people')}
+          </dd>
+          <dt className="text-slate-500 dark:text-slate-400">Luggage</dt>
+          <dd className="text-right font-medium text-slate-900 dark:text-slate-100">{plural(trip.luggageCount, 'bag', 'bags')}</dd>
           <dt className="text-slate-500 dark:text-slate-400">Sharing</dt>
-          <dd className="text-right font-medium text-slate-800 dark:text-slate-200">{trip.openToPooling ? 'Open to sharing' : 'Private cab'}</dd>
+          <dd className="text-right font-medium text-slate-900 dark:text-slate-100">
+            {trip.openToPooling ? 'Open to sharing' : 'Private cab'}
+          </dd>
         </dl>
 
-        <p className="mt-6 rounded-xl bg-sky-50 dark:bg-sky-950/50 px-4 py-3 text-sm text-sky-900 dark:text-sky-200">
-          Next, you&apos;ll verify your flight. Your arrival time is used later to find passengers landing around the
-          same time.
-        </p>
-      </div>
+        <div className="mt-5 rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:bg-slate-800/60 dark:text-slate-300">
+          <p className="font-medium text-slate-900 dark:text-white">Next: verify your flight</p>
+          <p className="mt-0.5">You&apos;ll add your flight number and a boarding pass or e-ticket.</p>
+        </div>
+      </Card>
     </aside>
   );
 }
 
 // A trip whose flight is verified (or that was cancelled): its details, read-only
 function LockedTripDetails({ trip }) {
-  const pickup =
-    trip.pickupLocation === MUMBAI_AIRPORT.name
-      ? `${MUMBAI_AIRPORT.shortName}${trip.pickupTerminal ? ` · ${trip.pickupTerminal}` : ''}`
-      : trip.pickupLocation;
-  const rows = [
-    ['Pickup', pickup],
-    ['Drop-off', trip.destination],
-    ['Travel date', formatDate(trip.travelDate)],
-    ['Expected arrival', formatTime(trip.expectedArrivalTime)],
-    ['Passengers', trip.passengerCount],
-    ['Bags', trip.luggageCount],
-    ['Sharing', trip.openToPooling ? 'Open to sharing' : 'Private cab'],
-  ];
+  const cancelled = trip.status === 'cancelled';
   const next =
     trip.status === 'ride_selected'
-      ? { to: `/trip/${trip.id}/summary`, label: 'View Booking Summary →' }
+      ? { to: `/trip/${trip.id}/summary`, label: 'View booking summary' }
       : trip.status === 'flight_verified'
-        ? { to: `/trip/${trip.id}/matches`, label: 'Continue to Find Your Ride →' }
+        ? { to: `/trip/${trip.id}/matches`, label: 'Continue to choose your ride' }
         : null;
 
   return (
-    <div className="mt-6 max-w-2xl rounded-2xl border border-slate-200/70 bg-white p-6 shadow-sm sm:mt-8 sm:p-8 dark:border-slate-800 dark:bg-slate-900">
-      <p className="rounded-xl bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:bg-sky-950/50 dark:text-sky-200">
-        {trip.status === 'cancelled'
-          ? 'This trip was cancelled, so its details can no longer be changed.'
-          : 'Your flight is verified, so these trip details are locked. To change them, plan a new trip.'}
+    <div className="mt-6 max-w-2xl space-y-4 sm:mt-8">
+      <Alert tone={cancelled ? 'neutral' : 'info'} title={cancelled ? 'This trip was cancelled' : 'Trip details are locked'}>
+        {cancelled
+          ? 'Its details can no longer be changed.'
+          : 'Your flight is verified, so these details can’t change. To travel on a different date or route, plan a new trip.'}
+      </Alert>
+      <TripSnapshot trip={trip} />
+      <p className="text-sm text-slate-600 dark:text-slate-400">
+        {trip.openToPooling ? 'Open to sharing a cab.' : 'Private cab only.'}
       </p>
-      <dl className="mt-5 divide-y divide-slate-100 dark:divide-slate-800">
-        {rows.map(([label, value]) => (
-          <div key={label} className="flex justify-between gap-4 py-2.5 text-sm">
-            <dt className="text-slate-500 dark:text-slate-400">{label}</dt>
-            <dd className="text-right font-medium text-slate-800 dark:text-slate-200">{value}</dd>
-          </div>
-        ))}
-      </dl>
-      <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div className="flex flex-wrap gap-3">
         {next && (
-          <Link
-            to={next.to}
-            className="inline-flex rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-700 focus-visible:ring-4 focus-visible:ring-sky-300 focus-visible:outline-none"
-          >
+          <LinkButton to={next.to}>
             {next.label}
-          </Link>
+            <ArrowRightIcon className="h-4 w-4" />
+          </LinkButton>
         )}
-        <Link to="/trip/new" className="text-sm font-medium text-sky-700 hover:underline dark:text-sky-400">
+        <LinkButton to="/trip/new" variant={next ? 'secondary' : 'primary'}>
           Plan a new trip
-        </Link>
+        </LinkButton>
       </div>
     </div>
   );
@@ -203,13 +294,16 @@ export default function TripDetailsPage() {
   const editing = Boolean(tripId);
   const [trip, setTrip] = useState(EMPTY_TRIP);
   const [customPickup, setCustomPickup] = useState(false);
+  const [lastAirport, setLastAirport] = useState(MUMBAI_AIRPORT); // for "Use ... instead"
+  // "Others": the destination is typed in. A saved trip whose destination isn't
+  // listed opens this way, so its text is kept.
+  const [otherDestination, setOtherDestination] = useState(false);
   const [loadingTrip, setLoadingTrip] = useState(editing);
-  const [loadError, setLoadError] = useState('');
+  const [loadError, setLoadError] = useState(null);
   const [savedTrip, setSavedTrip] = useState(null); // the trip being edited, as saved
   // One random id per form: if the same form is sent twice (double click,
   // network retry), the server returns the first trip instead of a duplicate
   const [requestId] = useState(() => globalThis.crypto?.randomUUID?.());
-  const [showPreferences, setShowPreferences] = useState(false);
   const [errors, setErrors] = useState({});
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -217,13 +311,16 @@ export default function TripDetailsPage() {
   const today = todayInMumbai();
 
   // Editing: load the saved trip into the form
-  useEffect(() => {
-    if (!tripId) return;
-    getTrip(tripId)
+  const loadTrip = useCallback(() => {
+    if (!tripId) return Promise.resolve();
+    return getTrip(tripId)
       .then((saved) => {
+        setLoadError(null);
         setSavedTrip(saved);
         if (saved.status !== 'awaiting_verification') return; // shown read-only below
-        setCustomPickup(saved.pickupLocation !== MUMBAI_AIRPORT.name);
+        setCustomPickup(!airportByName(saved.pickupLocation));
+        setLastAirport(airportByName(saved.pickupLocation) ?? MUMBAI_AIRPORT);
+        setOtherDestination(Boolean(saved.destination) && !listedDestination(saved.destination));
         setTrip({
           pickupLocation: saved.pickupLocation,
           pickupTerminal: saved.pickupTerminal,
@@ -235,9 +332,13 @@ export default function TripDetailsPage() {
           openToPooling: saved.openToPooling,
         });
       })
-      .catch((error) => setLoadError(error.message))
+      .catch(setLoadError)
       .finally(() => setLoadingTrip(false));
   }, [tripId]);
+
+  useEffect(() => {
+    loadTrip();
+  }, [loadTrip]);
 
   // Update one field and clear its error
   function update(field, value) {
@@ -249,18 +350,40 @@ export default function TripDetailsPage() {
     setCustomPickup(true);
     setTrip((prev) => ({ ...prev, pickupLocation: '', pickupTerminal: null }));
     setErrors((prev) => ({ ...prev, pickupLocation: undefined, pickupTerminal: undefined }));
+    requestAnimationFrame(() => document.getElementById('pickupLocation')?.focus());
   }
+
+  // An airport with one terminal (Navi Mumbai) needs no terminal choice
+  const onlyTerminal = (a) => (a.terminals.length === 1 ? a.terminals[0].id : null);
 
   function switchToAirportPickup() {
     setCustomPickup(false);
-    setTrip((prev) => ({ ...prev, pickupLocation: MUMBAI_AIRPORT.name }));
+    setTrip((prev) => ({ ...prev, pickupLocation: lastAirport.name, pickupTerminal: onlyTerminal(lastAirport) }));
     setErrors((prev) => ({ ...prev, pickupLocation: undefined }));
+  }
+
+  function chooseAirport(next) {
+    setLastAirport(next);
+    setTrip((prev) => (prev.pickupLocation === next.name ? prev : { ...prev, pickupLocation: next.name, pickupTerminal: onlyTerminal(next) }));
+    setErrors((prev) => ({ ...prev, pickupLocation: undefined, pickupTerminal: undefined }));
+  }
+
+  function chooseDestination(area) {
+    setOtherDestination(false);
+    update('destination', area);
+  }
+
+  function chooseOtherDestination() {
+    setOtherDestination(true);
+    update('destination', '');
+    requestAnimationFrame(() => document.getElementById('destination')?.focus());
   }
 
   function focusFirstError(fieldErrors) {
     const first = FIELD_ORDER.find((field) => fieldErrors[field]);
     if (!first) return;
-    const id = first === 'pickupTerminal' ? 'terminal-T1' : first;
+    const id =
+      first === 'pickupTerminal' ? 'terminal-T1' : first === 'destination' && !otherDestination ? 'destinationChoice' : first;
     requestAnimationFrame(() => document.getElementById(id)?.focus());
   }
 
@@ -272,7 +395,7 @@ export default function TripDetailsPage() {
     const details = {
       ...trip,
       pickupLocation: trip.pickupLocation.trim(),
-      destination: trip.destination.trim(),
+      destination: trip.destination.trim().replace(/\s+/g, ' '),
       pickupTerminal: customPickup ? null : trip.pickupTerminal,
     };
 
@@ -302,201 +425,181 @@ export default function TripDetailsPage() {
 
   // Details can only change before the flight is verified; after that they are shown read-only
   const locked = Boolean(savedTrip && savedTrip.status !== 'awaiting_verification');
+  const errorCount = Object.values(errors).filter(Boolean).length;
 
   return (
-    <AppLayout title="Plan Your Ride" step={2} trip={editing ? { id: tripId, status: savedTrip?.status } : null}>
-      <div className="max-w-2xl">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-3xl">
-          {locked ? 'Your trip details' : editing ? 'Edit your trip' : 'Where are you headed?'}
-        </h1>
-        <p className="mt-2 text-slate-500 dark:text-slate-400">
-          Tell us about your trip from the airport. We&apos;ll look for passengers going along a similar route, so you
-          can share a cab and pay less per person.
-        </p>
-      </div>
+    <AppLayout
+      title={editing ? 'Edit trip' : 'Plan a ride'}
+      step={1}
+      trip={editing ? { id: tripId, status: savedTrip?.status } : null}
+    >
+      <PageHeader
+        title={locked ? 'Your trip details' : editing ? 'Edit your trip' : 'Where are you headed?'}
+        description={
+          locked
+            ? null
+            : 'Tell us where you land and where you’re going. We’ll look for verified passengers on a similar route so you can share a cab.'
+        }
+      />
 
-      {loadingTrip && (
-        <div className="flex justify-center py-16">
-          <Spinner />
-        </div>
-      )}
+      {loadingTrip && <LoadingState label="Loading your trip…" />}
       {loadError && (
-        <div className="mt-8 max-w-2xl rounded-2xl border border-slate-200/70 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">
-            {loadError}
-          </p>
-          <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm font-medium">
-            <Link to="/trips" className="text-sky-700 hover:underline dark:text-sky-400">
-              ← My Trips
-            </Link>
-            <Link to="/trip/new" className="text-sky-700 hover:underline dark:text-sky-400">
-              Plan a new trip
-            </Link>
-          </div>
+        <div className="mt-6 sm:mt-8">
+          <ErrorState error={loadError} title="We couldn’t load this trip" onRetry={loadTrip} />
         </div>
       )}
 
       {locked && <LockedTripDetails trip={savedTrip} />}
 
       {!loadingTrip && !loadError && !locked && (
-      <div className="mt-6 grid gap-8 sm:mt-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        <form
-          onSubmit={handleSubmit}
-          noValidate
-          className="space-y-8 rounded-2xl border border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm sm:p-8"
-        >
-          {formError && (
-            <p role="alert" className="rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/40 px-3.5 py-3 text-sm text-rose-700 dark:text-rose-300">
-              {formError}
+        <div className="mt-6 grid items-start gap-8 sm:mt-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+          <Card as="form" padding="lg" onSubmit={handleSubmit} noValidate aria-describedby="required-note">
+            <p id="required-note" className="mb-6 text-sm text-slate-500 dark:text-slate-400">
+              All fields are required unless marked optional.
             </p>
-          )}
 
-          <fieldset>
-            <SectionTitle>Pickup</SectionTitle>
-            {customPickup ? (
-              <div>
-                <TextField
-                  label="Pickup point"
-                  name="pickupLocation"
-                  placeholder="e.g. Hotel near the airport, Andheri East"
-                  value={trip.pickupLocation}
-                  onChange={(e) => update('pickupLocation', e.target.value)}
-                  error={errors.pickupLocation}
-                />
-                <button
-                  type="button"
-                  onClick={switchToAirportPickup}
-                  className="mt-1 inline-block py-2 text-sm font-medium text-sky-700 dark:text-sky-400 hover:underline"
-                >
-                  Use {MUMBAI_AIRPORT.shortName} instead
-                </button>
-              </div>
-            ) : (
-              <AirportPickup
-                terminal={trip.pickupTerminal}
-                onTerminalChange={(value) => update('pickupTerminal', value)}
-                error={errors.pickupTerminal}
-                onUseCustom={switchToCustomPickup}
-              />
+            {formError && (
+              <Alert tone="error" title="Your trip wasn’t saved" className="mb-6">
+                {formError}
+              </Alert>
             )}
-          </fieldset>
 
-          <fieldset>
-            <SectionTitle>Drop-off</SectionTitle>
-            <SuggestionInput
-              label="Destination"
-              name="destination"
-              placeholder="Area, neighbourhood or landmark"
-              value={trip.destination}
-              onChange={(value) => update('destination', value)}
-              suggestions={POPULAR_DESTINATIONS}
-              error={errors.destination}
-              hint="Pick a suggestion or type any area in Mumbai."
-            />
-          </fieldset>
-
-          <fieldset>
-            <SectionTitle>When</SectionTitle>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <TextField
-                label="Travel date"
-                name="travelDate"
-                type="date"
-                min={today}
-                max={addDays(today, 365)}
-                value={trip.travelDate}
-                onChange={(e) => update('travelDate', e.target.value)}
-                error={errors.travelDate}
-              />
-              <TextField
-                label="Expected arrival time"
-                name="expectedArrivalTime"
-                type="time"
-                value={trip.expectedArrivalTime}
-                onChange={(e) => update('expectedArrivalTime', e.target.value)}
-                error={errors.expectedArrivalTime}
-                hint="When your flight lands (Mumbai time)."
-              />
-            </div>
-          </fieldset>
-
-          <fieldset>
-            <SectionTitle>Passengers</SectionTitle>
-            <NumberStepper
-              label="Passengers travelling together"
-              name="passengerCount"
-              value={trip.passengerCount}
-              onChange={(value) => update('passengerCount', value)}
-              min={1}
-              max={MAX_PASSENGERS}
-              unit={{ one: 'passenger', many: 'passengers' }}
-              hint={`Including you. Up to ${MAX_PASSENGERS} per booking.`}
-              error={errors.passengerCount}
-            />
-          </fieldset>
-
-          <div className="rounded-xl border border-slate-200 dark:border-slate-700">
-            <button
-              type="button"
-              onClick={() => setShowPreferences((s) => !s)}
-              aria-expanded={showPreferences}
-              aria-controls="additional-preferences"
-              className="flex w-full items-center justify-between rounded-xl px-4 py-3.5 text-left focus-visible:ring-4 focus-visible:ring-sky-100 dark:focus-visible:ring-sky-900 focus-visible:outline-none"
-            >
-              <span>
-                <span className="block font-medium text-slate-800 dark:text-slate-200">Additional preferences</span>
-                <span className="block text-sm text-slate-500 dark:text-slate-400">Luggage and sharing · optional</span>
-              </span>
-              <svg
-                viewBox="0 0 20 20"
-                className={`h-5 w-5 fill-slate-400 dark:fill-slate-500 transition-transform ${showPreferences ? 'rotate-180' : ''}`}
-                aria-hidden="true"
-              >
-                <path d="M5.3 7.3a1 1 0 0 1 1.4 0L10 10.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4Z" />
-              </svg>
-            </button>
-
-            <AnimatePresence initial={false}>
-              {showPreferences && (
-                <motion.div
-                  id="additional-preferences"
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="overflow-hidden"
-                >
-                  <div className="space-y-6 border-t border-slate-100 dark:border-slate-800 px-4 pt-4 pb-5">
-                    <NumberStepper
-                      label="Bags"
-                      name="luggageCount"
-                      value={trip.luggageCount}
-                      onChange={(value) => update('luggageCount', value)}
-                      min={0}
-                      max={MAX_LUGGAGE}
-                      unit={{ one: 'bag', many: 'bags' }}
-                      hint="Check-in bags and large suitcases, so the cab has room."
-                      error={errors.luggageCount}
+            <div className="space-y-6">
+              <FormSection number={1} title="Pickup">
+                {customPickup ? (
+                  <div>
+                    <TextField
+                      label="Pickup point"
+                      name="pickupLocation"
+                      placeholder="e.g. Hotel near the airport, Andheri East"
+                      value={trip.pickupLocation}
+                      onChange={(e) => update('pickupLocation', e.target.value)}
+                      error={errors.pickupLocation}
+                      hint="Shared rides are only offered for airport pickups."
                     />
-                    <Switch
-                      label="Open to sharing a cab"
-                      description="Turn off if you only want a cab for your own group."
-                      checked={trip.openToPooling}
-                      onChange={(value) => update('openToPooling', value)}
-                    />
+                    <button type="button" onClick={switchToAirportPickup} className={`mt-3 py-1 ${textLink}`}>
+                      Use {lastAirport.shortName} instead
+                    </button>
                   </div>
-                </motion.div>
+                ) : (
+                  <AirportPickup
+                    airport={airportByName(trip.pickupLocation) ?? MUMBAI_AIRPORT}
+                    onAirportChange={chooseAirport}
+                    terminal={trip.pickupTerminal}
+                    onTerminalChange={(value) => update('pickupTerminal', value)}
+                    error={errors.pickupTerminal}
+                    onUseCustom={switchToCustomPickup}
+                  />
+                )}
+              </FormSection>
+
+              <FormSection number={2} title="Drop-off">
+                <div className="space-y-4">
+                  <DestinationSelect
+                    value={trip.destination}
+                    otherSelected={otherDestination}
+                    onChange={chooseDestination}
+                    onChooseOther={chooseOtherDestination}
+                    error={otherDestination ? undefined : errors.destination}
+                    hint={otherDestination ? undefined : 'Mumbai and Navi Mumbai areas. Not listed? Choose Others.'}
+                  />
+                  {otherDestination && (
+                    <TextField
+                      label="Your destination"
+                      name="destination"
+                      placeholder="e.g. Hiranandani Estate, Thane West"
+                      value={trip.destination}
+                      onChange={(e) => update('destination', e.target.value)}
+                      error={errors.destination}
+                      hint="The area or landmark you're going to."
+                    />
+                  )}
+                </div>
+              </FormSection>
+
+              <FormSection number={3} title="Arrival" description="Used to find passengers landing around the same time.">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <TextField
+                      label="Travel date"
+                      name="travelDate"
+                      type="date"
+                      min={today}
+                      max={addDays(today, 365)}
+                      value={trip.travelDate}
+                      onChange={(e) => update('travelDate', e.target.value)}
+                      error={errors.travelDate}
+                    />
+                    <DateShortcuts today={today} value={trip.travelDate} onPick={(date) => update('travelDate', date)} />
+                  </div>
+                  <TextField
+                    label="Expected landing time"
+                    name="expectedArrivalTime"
+                    type="time"
+                    value={trip.expectedArrivalTime}
+                    onChange={(e) => update('expectedArrivalTime', e.target.value)}
+                    error={errors.expectedArrivalTime}
+                    hint="Mumbai time, as on your ticket."
+                  />
+                </div>
+              </FormSection>
+
+              <FormSection number={4} title="Who’s travelling" description="So we can suggest a cab with enough seats and boot space.">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <NumberStepper
+                    label="Passengers"
+                    name="passengerCount"
+                    icon={UsersIcon}
+                    value={trip.passengerCount}
+                    onChange={(value) => update('passengerCount', value)}
+                    min={1}
+                    max={MAX_PASSENGERS}
+                    unit={{ one: 'person', many: 'people' }}
+                    hint={`Including you. Up to ${MAX_PASSENGERS}.`}
+                    error={errors.passengerCount}
+                  />
+                  <NumberStepper
+                    label="Bags"
+                    name="luggageCount"
+                    icon={LuggageIcon}
+                    value={trip.luggageCount}
+                    onChange={(value) => update('luggageCount', value)}
+                    min={0}
+                    max={MAX_LUGGAGE}
+                    unit={{ one: 'bag', many: 'bags' }}
+                    hint="Check-in bags and large suitcases."
+                    error={errors.luggageCount}
+                  />
+                </div>
+                <div className="mt-5 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700">
+                  <Switch
+                    label="Open to sharing a cab"
+                    description="Turn off if you only want a cab for your own group. You can still change this when you choose your ride."
+                    checked={trip.openToPooling}
+                    onChange={(value) => update('openToPooling', value)}
+                  />
+                </div>
+              </FormSection>
+            </div>
+
+            <div className="mt-8 border-t border-slate-100 pt-6 dark:border-slate-800">
+              {errorCount > 0 && (
+                <p role="status" className="mb-3 text-sm font-medium text-rose-700 dark:text-rose-400">
+                  {errorCount === 1 ? '1 field needs' : `${errorCount} fields need`} your attention.
+                </p>
               )}
-            </AnimatePresence>
-          </div>
+              <Button type="submit" loading={submitting} loadingText="Saving your trip…">
+                Continue to flight verification
+                <ArrowRightIcon className="h-5 w-5" />
+              </Button>
+              <p className="mt-3 text-center text-sm text-slate-500 dark:text-slate-400">
+                Your trip is saved when you continue, so you can pick it up later from My Trips.
+              </p>
+            </div>
+          </Card>
 
-          <Button type="submit" loading={submitting} loadingText="Saving your trip…">
-            Continue to Flight Verification →
-          </Button>
-        </form>
-
-        <TripSummary trip={trip} customPickup={customPickup} />
-      </div>
+          <TripSummary trip={trip} customPickup={customPickup} />
+        </div>
       )}
     </AppLayout>
   );

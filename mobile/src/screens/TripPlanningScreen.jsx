@@ -23,7 +23,7 @@ import Alert from '../components/Alert';
 import Button from '../components/Button';
 import Card from '../components/Card';
 import ChoiceCard from '../components/ChoiceCard';
-import DestinationField from '../components/DestinationField';
+import DropAreaPicker from '../components/DropAreaPicker';
 import FormScreen from '../components/FormScreen';
 import NumberStepper from '../components/NumberStepper';
 import PickerField from '../components/PickerField';
@@ -31,7 +31,7 @@ import TextField from '../components/TextField';
 import { PlaneIcon } from '../components/icons';
 import { createTrip, updateTrip } from '../api/trips.api';
 import { stepHref } from '../navigation/tripSteps';
-import { MUMBAI_AIRPORT, POPULAR_DESTINATIONS } from '../shared/mumbaiLocations';
+import { AIRPORTS, MUMBAI_AIRPORT, airportByName, listedDestination } from '../shared/mumbaiLocations';
 import { MAX_LUGGAGE, MAX_PASSENGERS, validateTrip } from '../shared/tripValidation';
 import { addDays, todayInMumbai } from '../shared/dates';
 import { fieldErrorsFrom } from '../auth/validation';
@@ -87,7 +87,7 @@ function toRequest(trip, customPickup) {
   return {
     ...trip,
     pickupLocation: trip.pickupLocation.trim(),
-    destination: trip.destination.trim(),
+    destination: trip.destination.trim().replace(/\s+/g, ' '),
     pickupTerminal: customPickup ? null : trip.pickupTerminal,
   };
 }
@@ -102,8 +102,16 @@ export default function TripPlanningScreen({ existing }) {
   const [draft] = useState(() => (existing ? null : getTripDraft(userId)));
   const [trip, setTrip] = useState(() => draft?.trip ?? formFrom(existing));
   const [customPickup, setCustomPickup] = useState(() =>
-    draft ? draft.customPickup : Boolean(existing) && existing.pickupLocation !== MUMBAI_AIRPORT.name,
+    draft ? draft.customPickup : Boolean(existing) && !airportByName(existing.pickupLocation),
   );
+  // "Others": the destination is typed in instead of picked. A saved trip with a
+  // destination that isn't listed opens this way, so the text is kept.
+  const [otherDestination, setOtherDestination] = useState(() => {
+    const destination = (draft?.trip ?? formFrom(existing)).destination;
+    return Boolean(destination) && !listedDestination(destination);
+  });
+  const [lastAirport, setLastAirport] = useState(() => airportByName(trip.pickupLocation) ?? MUMBAI_AIRPORT);
+  const airport = customPickup ? null : (airportByName(trip.pickupLocation) ?? MUMBAI_AIRPORT);
   const [saved, setSaved] = useState(() => (existing ? formFrom(existing) : null)); // what the server has
   const [touched, setTouched] = useState({});
   const [serverErrors, setServerErrors] = useState({});
@@ -134,10 +142,41 @@ export default function TripPlanningScreen({ existing }) {
     requestIdRef.current = null; // different details -> a different trip
   }
 
+  // An airport with one terminal (Navi Mumbai) needs no terminal choice
+  const onlyTerminal = (a) => (a.terminals.length === 1 ? a.terminals[0].id : null);
+
   function choosePickup(custom) {
     setCustomPickup(custom);
-    setTrip((prev) => ({ ...prev, pickupLocation: custom ? '' : MUMBAI_AIRPORT.name, pickupTerminal: null }));
+    setTrip((prev) => ({
+      ...prev,
+      pickupLocation: custom ? '' : lastAirport.name,
+      pickupTerminal: custom ? null : onlyTerminal(lastAirport),
+    }));
     setTouched((prev) => ({ ...prev, pickupLocation: false, pickupTerminal: false }));
+    requestIdRef.current = null;
+  }
+
+  function chooseAirport(next) {
+    if (next.name === trip.pickupLocation) return;
+    setLastAirport(next);
+    setTrip((prev) => ({ ...prev, pickupLocation: next.name, pickupTerminal: onlyTerminal(next) }));
+    setTouched((prev) => ({ ...prev, pickupTerminal: false }));
+    setServerErrors((prev) => ({ ...prev, pickupLocation: undefined, pickupTerminal: undefined }));
+    setFormError(null);
+    requestIdRef.current = null;
+  }
+
+  function chooseDestination(area) {
+    setOtherDestination(false);
+    update('destination', area);
+  }
+
+  function chooseOtherDestination() {
+    if (otherDestination) return;
+    setOtherDestination(true);
+    setTrip((prev) => ({ ...prev, destination: '' })); // typed below
+    setTouched((prev) => ({ ...prev, destination: false }));
+    setServerErrors((prev) => ({ ...prev, destination: undefined }));
     requestIdRef.current = null;
   }
 
@@ -220,23 +259,39 @@ export default function TripPlanningScreen({ existing }) {
               testID="pickup-input"
             />
             <Pressable onPress={() => choosePickup(false)} accessibilityRole="button" style={styles.textButton}>
-              <Text style={styles.link}>Use {MUMBAI_AIRPORT.shortName} instead</Text>
+              <Text style={styles.link}>Use {lastAirport.shortName} instead</Text>
             </Pressable>
           </View>
         ) : (
           <View style={styles.gap}>
-            <View style={styles.airport}>
-              <View style={styles.airportIcon}>
-                <PlaneIcon size={20} color={colors.accent} />
-              </View>
-              <View style={styles.flex}>
-                <AppText variant="bodyStrong">{MUMBAI_AIRPORT.shortName}</AppText>
-                <AppText variant="small">Pickup at the arrivals area</AppText>
-              </View>
+            <AppText variant="label">Which airport do you land at?</AppText>
+            <View style={styles.gap} accessibilityRole="radiogroup">
+              {AIRPORTS.map((a) => (
+                <ChoiceCard
+                  key={a.code}
+                  title={a.shortName}
+                  subtitle={`${a.city} · pickup at the arrivals area`}
+                  selected={airport?.code === a.code}
+                  onPress={() => chooseAirport(a)}
+                  testID={`airport-${a.code}`}
+                />
+              ))}
             </View>
-            <AppText variant="label">Which terminal do you land at?</AppText>
+            {airport.terminals.length === 1 ? (
+              <View style={styles.airport} testID="single-terminal">
+                <View style={styles.airportIcon}>
+                  <PlaneIcon size={20} color={colors.accent} />
+                </View>
+                <View style={styles.flex}>
+                  <AppText variant="bodyStrong">{airport.terminals[0].label}</AppText>
+                  <AppText variant="small">{airport.shortName} has one terminal - nothing to choose.</AppText>
+                </View>
+              </View>
+            ) : (
+              <AppText variant="label">Which terminal do you land at?</AppText>
+            )}
             <View style={styles.row} accessibilityRole="radiogroup">
-              {MUMBAI_AIRPORT.terminals.map((t) => (
+              {(airport.terminals.length > 1 ? airport.terminals : []).map((t) => (
                 <ChoiceCard
                   key={t.id}
                   title={t.label}
@@ -262,13 +317,31 @@ export default function TripPlanningScreen({ existing }) {
 
         {/* 2. Destination */}
         <SectionTitle number={2} title="To" />
-        <DestinationField
-          value={trip.destination}
-          onChange={(v) => update('destination', v)}
-          suggestions={POPULAR_DESTINATIONS}
-          error={shownError('destination')}
-          hint="Pick a suggestion or type any area in Mumbai."
-        />
+        <View style={styles.gap}>
+          <DropAreaPicker
+            label="Destination"
+            placeholder="Choose your destination"
+            value={trip.destination}
+            onChange={chooseDestination}
+            onChooseOther={chooseOtherDestination}
+            otherSelected={otherDestination}
+            error={otherDestination ? undefined : shownError('destination')}
+            hint={otherDestination ? undefined : 'Search Mumbai and Navi Mumbai areas, or choose Others.'}
+            testID="destination"
+          />
+          {otherDestination ? (
+            <TextField
+              label="Your destination"
+              value={trip.destination}
+              onChangeText={(v) => update('destination', v)}
+              error={shownError('destination')}
+              hint="The area or landmark you're going to, e.g. Hiranandani Estate, Thane West."
+              placeholder="Enter your destination"
+              autoCapitalize="words"
+              testID="destination-input"
+            />
+          ) : null}
+        </View>
 
         {/* 3. When */}
         <SectionTitle number={3} title="When" subtitle="Used to find passengers landing around the same time." />

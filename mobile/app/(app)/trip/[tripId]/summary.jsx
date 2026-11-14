@@ -16,6 +16,7 @@ import { ActivityIndicator, LayoutAnimation, View } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import AppHeader from '../../../../src/components/AppHeader';
 import AppText from '../../../../src/components/AppText';
+import TravellerProfile from '../../../../src/components/TravellerProfile';
 import Alert from '../../../../src/components/Alert';
 import Button from '../../../../src/components/Button';
 import FareBreakdown from '../../../../src/components/FareBreakdown';
@@ -28,7 +29,8 @@ import { useAuth } from '../../../../src/auth/authContext';
 import { goToStep, startNewTrip, stepHref } from '../../../../src/navigation/tripSteps';
 import { formatDate, formatTime } from '../../../../src/shared/dates';
 import { formatFlightNumber, formatRupees } from '../../../../src/shared/format';
-import { isDemoVerification, partyLabel, pickupLabel, plural, terminalLabel } from '../../../../src/shared/trips';
+import { airportLabel, isDemoVerification, partyLabel, pickupLabel, plural, terminalLabel } from '../../../../src/shared/trips';
+import { airportByCode } from '../../../../src/shared/mumbaiLocations';
 import { landsRelative } from '../../../../src/utils/travellers';
 import { makeStyles, spacing, useTheme } from '../../../../src/theme';
 
@@ -40,14 +42,17 @@ const yourShareOf = (ride) => (ride.mode === 'solo' ? (ride.soloFare?.total ?? n
 // What the passenger is looking at - if this changes, they must review again
 const reviewKey = (ride) => (ride ? [ride.mode, ride.vehicleType, ride.pool?.id ?? '', yourShareOf(ride) ?? ''].join('|') : '');
 
-function OtherTraveller({ member, testID }) {
+function OtherTraveller({ member, index, testID }) {
   const styles = useStyles();
   return (
     <SummaryRow label={member.area ?? 'Your destination'} testID={testID}>
-      <AppText variant="label" style={styles.value}>
-        {plural(member.partySize, 'person', 'people')} · {member.flightNumber ? formatFlightNumber(member.flightNumber) : 'flight'}
-        {member.sameFlight ? ' (your flight)' : ''} · lands {landsRelative(member.minutesApart).toLowerCase()}
-      </AppText>
+      <View style={styles.otherTraveller}>
+        <TravellerProfile profile={member.profile} fallback={`Traveller ${index + 1}`} testID="summary-other-profile" />
+        <AppText variant="label" style={styles.value}>
+          {plural(member.partySize, 'person', 'people')} · {member.flightNumber ? formatFlightNumber(member.flightNumber) : 'flight'}
+          {member.sameFlight ? ' (your flight)' : ''} · lands {landsRelative(member.minutesApart).toLowerCase()}
+        </AppText>
+      </View>
     </SummaryRow>
   );
 }
@@ -55,7 +60,7 @@ function OtherTraveller({ member, testID }) {
 export default function BookingSummaryScreen() {
   const { colors } = useTheme();
   const styles = useStyles();
-  const { tripId } = useLocalSearchParams();
+  const { tripId, joined } = useLocalSearchParams();
   const { user } = useAuth();
   const [data, setData] = useState(null);
   const [loadError, setLoadError] = useState(null);
@@ -201,6 +206,13 @@ export default function BookingSummaryScreen() {
           </Alert>
         )}
 
+        {joined === '1' ? (
+          <Alert tone="info" title="You joined a shared ride that had just been started" testID="summary-joined-existing">
+            A compatible passenger started a shared ride for your flight a moment before you, so you’ve been added to it instead of
+            starting a second one.
+          </Alert>
+        ) : null}
+
         {/* A. Trip */}
         <SummaryCard title="Trip details" onEdit={booked ? null : () => edit(1)} editLabel="Edit trip details" testID="summary-trip">
           <SummaryRow label="Passenger" value={user?.name} testID="summary-passenger" />
@@ -221,7 +233,7 @@ export default function BookingSummaryScreen() {
           <SummaryRow label="Departure airport" value="Not recorded" testID="summary-departure" />
           <SummaryRow
             label="Arrival airport"
-            value={`Mumbai (${flight.arrivalAirport ?? 'BOM'})${terminalLabel(trip) ? ` · ${terminalLabel(trip)}` : ''}`}
+            value={`${airportLabel(trip) ?? airportByCode(flight.arrivalAirport)?.shortName ?? 'Mumbai Airport (BOM)'}${terminalLabel(trip) ? ` · ${terminalLabel(trip)}` : ''}`}
           />
           <SummaryRow label="Arrives" value={`${formatDate(flightDate)} · ${formatTime(landing)}`} />
           <SummaryRow
@@ -244,11 +256,11 @@ export default function BookingSummaryScreen() {
                 </View>
               </SummaryRow>
               {others.map((m, i) => (
-                <OtherTraveller key={i} member={m} testID="summary-other" />
+                <OtherTraveller key={i} member={m} index={i} testID="summary-other" />
               ))}
               {others.length === 0 && <AppText variant="small">Nobody else has joined your shared ride yet.</AppText>}
               <SummaryRow label="Total passengers" value={plural(passengers, 'person', 'people')} strong testID="summary-total-passengers" />
-              <AppText variant="caption">Other travellers are shown by drop-off area - FlyPool doesn’t share names.</AppText>
+              <AppText variant="caption">Other travellers are shown by drop-off area, with the name, age and identity status they chose to share.</AppText>
             </>
           ) : ride?.mode === 'solo' ? (
             <AppText variant="bodyStrong" testID="summary-alone">
@@ -323,6 +335,7 @@ export default function BookingSummaryScreen() {
 
 const useStyles = makeStyles(() => ({
   center: { textAlign: 'center' },
+  otherTraveller: { flex: 1, gap: spacing[1] },
   title: { marginBottom: spacing[4] },
   intro: { marginTop: spacing[1] },
   loading: { alignItems: 'center', gap: spacing[3], marginTop: spacing[10] },

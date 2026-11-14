@@ -1,7 +1,8 @@
 // One compatible traveller from GET /trips/:id/matches.
 // Shows only what the server shares: drop-off area, group size, flight and
-// landing time - never a name, contact details or an exact address (the
-// server doesn't send them). "Why you match" restates the server's own
+// landing time, plus the traveller's profile (short name, age, gender only if
+// they chose to show it, identity status - see TravellerProfile). Never contact
+// details, a date of birth or an exact address (the server doesn't send them). "Why you match" restates the server's own
 // matching rules for this traveller; nothing is guessed on the phone.
 //   <TravellerCard traveller={t} index={0} trip={myTrip} windowMinutes={60} />
 import { View } from 'react-native';
@@ -9,6 +10,7 @@ import AppText from './AppText';
 import Card from './Card';
 import FlightCode from './FlightCode';
 import { CheckIcon, UsersIcon } from './icons';
+import { IdentityBadge, profileLine } from './TravellerProfile';
 import { formatFlightNumber } from '../shared/format';
 import { plural, terminalLabel } from '../shared/trips';
 import { landingTime, landsRelative } from '../utils/travellers';
@@ -61,7 +63,8 @@ export default function TravellerCard({ traveller, index, trip, windowMinutes })
   const styles = useStyles();
   const { dateText, timeText } = landingTime(trip, traveller.minutesApart);
   const terminal = terminalLabel(trip);
-  const name = `Traveller ${index + 1}`;
+  const shared = Boolean(traveller.profile?.shared);
+  const name = profileLine(traveller.profile, `Traveller ${index + 1}`);
 
   return (
     <Card testID="traveller-card" style={styles.card}>
@@ -70,10 +73,11 @@ export default function TravellerCard({ traveller, index, trip, windowMinutes })
           <UsersIcon size={22} color={colors.primaryIcon} />
         </View>
         <View style={styles.flex}>
-          <AppText variant="bodyStrong">{name}</AppText>
-          <AppText variant="caption">Verified flight</AppText>
+          <AppText variant="bodyStrong" testID="traveller-name">{name}</AppText>
+          <AppText variant="caption">{shared ? 'Verified flight' : 'Verified flight · profile not shared'}</AppText>
         </View>
         <View style={styles.badges}>
+          {shared && <IdentityBadge identity={traveller.profile.identity} testID="traveller-identity" />}
           {traveller.sameFlight && <Badge tone="brand">Same flight</Badge>}
           {traveller.isDemo && <Badge tone="warning">Sample data</Badge>}
         </View>

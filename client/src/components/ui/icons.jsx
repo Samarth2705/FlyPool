@@ -1,12 +1,12 @@
 // Small outline icons used across the app (inline SVG - no icon library needed).
 // They take the current text colour; pass className to change the size.
-function Icon({ className = 'h-5 w-5', children }) {
+function Icon({ className = 'h-5 w-5', strokeWidth = '1.8', children }) {
   return (
     <svg
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.8"
+      strokeWidth={strokeWidth}
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
@@ -177,6 +177,91 @@ export function BellIcon(props) {
     <Icon {...props}>
       <path d="M6 16V11a6 6 0 1 1 12 0v5l2 2H4Z" />
       <path d="M10 20a2 2 0 0 0 4 0" />
+    </Icon>
+  );
+}
+
+export function AlertIcon(props) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7.5v5.5M12 16.5h.01" />
+    </Icon>
+  );
+}
+
+export function InfoIcon(props) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5.5M12 7.5h.01" />
+    </Icon>
+  );
+}
+
+export function ArrowLeftIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M19 12H5M11 6l-6 6 6 6" />
+    </Icon>
+  );
+}
+
+export function ArrowRightIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M5 12h14M13 6l6 6-6 6" />
+    </Icon>
+  );
+}
+
+export function PlusIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </Icon>
+  );
+}
+
+export function ClockIcon(props) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </Icon>
+  );
+}
+
+export function LuggageIcon(props) {
+  return (
+    <Icon {...props}>
+      <rect x="6" y="7" width="12" height="13" rx="2" />
+      <path d="M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7M10 11v5M14 11v5M8.5 20v1M15.5 20v1" />
+    </Icon>
+  );
+}
+
+export function LockIcon(props) {
+  return (
+    <Icon {...props}>
+      <rect x="5" y="11" width="14" height="10" rx="2" />
+      <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+    </Icon>
+  );
+}
+
+export function HomeIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1Z" />
+    </Icon>
+  );
+}
+
+export function CheckIcon(props) {
+  return (
+    <Icon strokeWidth="2.4" {...props}>
+      <path d="M5 12.5l4.5 4.5L19 7.5" />
     </Icon>
   );
 }

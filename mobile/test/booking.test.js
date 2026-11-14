@@ -5,8 +5,6 @@
 // Every passenger is a real account with a server-verified trip, every ride
 // and booking is saved by the server, and the booking reference shown is
 // compared with the one in the database - nothing here is mocked.
-import fs from 'node:fs';
-import path from 'node:path';
 import nodeAxios from 'axios/dist/node/axios.cjs';
 import { StyleSheet } from 'react-native';
 import { screen, within } from 'expo-router/testing-library';
@@ -15,10 +13,10 @@ import { darkColors } from '../src/theme';
 import { addDays, todayInMumbai } from '../src/shared/dates';
 import { formatRupees } from '../src/shared/format';
 import { act, launchApp, newUserDetails, press, signedInUser, waitFor } from './helpers';
+import { ticketFor } from './tickets';
 
 const network = globalThis.network;
 const AIRPORT = 'Chhatrapati Shivaji Maharaj International Airport, Mumbai';
-const PDF = fs.readFileSync(path.join(__dirname, 'fixtures', 'e-ticket.pdf'));
 
 const randomIp = () => `10.${200 + Math.floor(Math.random() * 50)}.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`;
 const server = nodeAxios.create({
@@ -54,7 +52,7 @@ async function newTrip(token, slot, details = {}, { verify = true } = {}) {
     airline: 'IndiGo',
     flightNumber: '6E 2134',
     scheduledArrivalTime: slot.time,
-    document: { mimeType: 'application/pdf', dataBase64: PDF.toString('base64') },
+    document: await ticketFor(token, trip),
   };
   return (await server.post(`/trips/${trip.id}/verification`, verification, as(token))).data.data.trip;
 }
@@ -118,7 +116,7 @@ test.each([
   const tripCard = screen.getByTestId('summary-trip');
   expect(tripCard).toHaveTextContent(new RegExp(`Passenger${user.name}.*Mumbai Airport \\(BOM\\) · T2.*DestinationPowai.*6E 2134`));
   // B. Flight - nothing made up
-  expect(screen.getByTestId('summary-flight')).toHaveTextContent(/AirlineIndiGo.*Departure airportNot recorded.*Arrival airportMumbai \(BOM\) · Terminal 2/);
+  expect(screen.getByTestId('summary-flight')).toHaveTextContent(/AirlineIndiGo.*Departure airportNot recorded.*Arrival airportMumbai Airport \(BOM\) · Terminal 2/);
   expect(screen.getByTestId('summary-verification')).toHaveTextContent('Verified (demo check)');
   // C. Travellers: me once, plus the one other booking in the shared ride
   const travellers = screen.getByTestId('summary-travellers');

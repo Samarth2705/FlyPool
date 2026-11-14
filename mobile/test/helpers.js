@@ -56,3 +56,28 @@ export async function press(element) {
 }
 
 export { act, fireEvent, waitFor };
+
+// ---- the destination picker (Trip Planning) ---------------------------------
+// A listed area: open the picker, search, tap it ("Kharghar" -> "Kharghar, Navi Mumbai")
+export async function chooseDestination(area) {
+  const { screen } = require('expo-router/testing-library');
+  const { regionOf } = require('../src/shared/mumbaiLocations');
+  await press(screen.getByTestId('destination-field'));
+  await typeInto(screen.getByTestId('destination-search'), area);
+  await press(screen.getByLabelText(`${area}, ${regionOf(area)}`));
+}
+
+// "Others": pick it, then type the destination in the field that appears
+export async function chooseOtherDestination(text) {
+  const { screen } = require('expo-router/testing-library');
+  await press(screen.getByTestId('destination-field'));
+  await press(screen.getByTestId('destination-others'));
+  await typeInto(screen.getByTestId('destination-input'), text);
+}
+
+// A listed area or, if not listed, typed under "Others"
+export async function enterDestination(text) {
+  const { listedDestination } = require('../src/shared/mumbaiLocations');
+  if (listedDestination(text)) await chooseDestination(listedDestination(text));
+  else await chooseOtherDestination(text);
+}

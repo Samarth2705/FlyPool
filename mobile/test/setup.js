@@ -264,7 +264,7 @@ jest.mock('expo-image-manipulator', () => {
                 encoder.calls.push({ uri, maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...save });
                 counter += 1;
                 const out = path.join(files.cacheDir, `ImageManipulator-${counter}.${save.format === 'png' ? 'png' : 'jpg'}`);
-                fs.writeFileSync(out, encoder.output ?? fs.readFileSync(path.join(process.cwd(), 'test', 'fixtures', 'boarding-pass.jpg')));
+                fs.writeFileSync(out, encoder.output ?? fs.readFileSync(path.join(process.cwd(), 'test', 'fixtures', 'random-screenshot.jpg')));
                 return { uri: pathToFileURL(out).href, width, height };
               },
             };

@@ -12,6 +12,18 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true, select: false },
     // Sample account created by `npm run seed:demo` (it cannot be logged into)
     isDemo: { type: Boolean, default: false },
+
+    // ---- traveller profile (optional; see services/profile.service.js) ----
+    // Only the account holder ever sees the date of birth. Other passengers
+    // see the AGE worked out from it, and only if profileSharing.shareProfile.
+    dateOfBirth: { type: String, default: null }, // "YYYY-MM-DD"
+    gender: { type: String, enum: ['female', 'male', 'non_binary', null], default: null },
+    // What compatible travellers and ride partners may see. Off until the
+    // passenger turns it on (accounts made before profiles existed: off too).
+    profileSharing: {
+      shareProfile: { type: Boolean, default: false }, // name (first name + initial) and age
+      showGender: { type: Boolean, default: false }, // gender too (only with shareProfile)
+    },
   },
   {
     timestamps: true, // adds createdAt and updatedAt

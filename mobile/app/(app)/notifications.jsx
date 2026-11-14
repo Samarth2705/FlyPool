@@ -21,6 +21,7 @@ import { fontWeight, makeStyles, radius, spacing, useTheme } from '../../src/the
 
 const ICONS = {
   compatible_traveller: UsersIcon,
+  pool_created: UsersIcon,
   pool_joined: UsersIcon,
   pool_left: UsersIcon,
   booking_confirmed: CheckIcon,

@@ -61,3 +61,11 @@ export const paymentLimiter = limiter({
   perUser: true,
   message: 'Too many payment attempts in a short time. Please wait a few minutes and try again.',
 });
+
+// Live ride checks: the app polls about every 4 s per open screen (~15 a minute)
+export const liveLimiter = limiter({
+  windowMinutes: 1,
+  limit: 120,
+  perUser: true,
+  message: 'Too many updates requested. Please wait a moment.',
+});

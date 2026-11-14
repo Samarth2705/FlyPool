@@ -57,6 +57,8 @@ const api = spawn(process.execPath, ['src/server.js'], {
     FLIGHT_VERIFICATION_MODE: 'demo',
     PAYMENT_MODE: 'demo', // simulated payments only
     PAYMENT_WEBHOOK_SECRET: 'mobile-test-webhook-secret',
+    // Identity verification: the manual (demo) check - the server's default
+    IDENTITY_PROVIDER: 'manual',
     LOG_REQUESTS: 'false',
   },
 });

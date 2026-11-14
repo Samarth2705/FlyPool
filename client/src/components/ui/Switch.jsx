@@ -6,15 +6,15 @@ export default function Switch({ label, description, checked, onChange }) {
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="flex w-full items-start justify-between gap-4 rounded-xl text-left focus-visible:ring-4 focus-visible:ring-sky-100 dark:focus-visible:ring-sky-900 focus-visible:outline-none"
+      className="flex w-full items-start justify-between gap-4 rounded-lg py-1 text-left focus-visible:ring-4 focus-visible:ring-brand-100 dark:focus-visible:ring-brand-900 focus-visible:outline-none"
     >
       <span>
-        <span className="block text-sm font-medium text-slate-700 dark:text-slate-200">{label}</span>
+        <span className="block text-sm font-medium text-slate-800 dark:text-slate-200">{label}</span>
         {description && <span className="mt-0.5 block text-sm text-slate-500 dark:text-slate-400">{description}</span>}
       </span>
       <span
         className={`relative mt-0.5 inline-flex h-6 w-11 shrink-0 rounded-full transition-colors ${
-          checked ? 'bg-sky-600' : 'bg-slate-300 dark:bg-slate-600'
+          checked ? 'bg-brand-600' : 'bg-slate-400 dark:bg-slate-600'
         }`}
       >
         <span

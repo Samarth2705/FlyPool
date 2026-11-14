@@ -7,7 +7,7 @@ import { screen } from 'expo-router/testing-library';
 import api from '../src/api/client';
 import { addDays, formatDate, todayInMumbai } from '../src/shared/dates';
 import { isoToPickerDate } from '../src/utils/pickerDates';
-import { act, fireEvent, launchApp, press, signedInUser, typeInto, waitFor } from './helpers';
+import { act, chooseDestination, enterDestination, fireEvent, launchApp, press, signedInUser, typeInto, waitFor } from './helpers';
 
 const network = globalThis.network;
 const nativePicker = globalThis.nativePicker;
@@ -64,7 +64,7 @@ const IN_3_DAYS = () => addDays(todayInMumbai(), 3);
 
 async function fillValidTrip({ destination = 'Powai', date = IN_3_DAYS() } = {}) {
   await press(screen.getByTestId('terminal-T2'));
-  await typeInto(screen.getByTestId('destination-input'), destination);
+  await enterDestination(destination);
   await pick('Travel date', 'date', isoToPickerDate(date));
   await pick('Expected landing time', 'time', new Date(2000, 0, 1, 18, 30));
   await waitFor(() => expect(isDisabled(continueButton())).toBe(false));
@@ -112,7 +112,7 @@ test('a session that ends while filling the form goes back to login without savi
   await typeInto(screen.getByLabelText('Password'), user.password);
   await press(screen.getByText('Log in'));
   expect(await screen.findByText('Where are you headed?')).toBeTruthy();
-  expect(screen.getByTestId('destination-input').props.value).toBe('Powai');
+  expect(screen.getByLabelText('Destination: Powai')).toBeTruthy();
   expect(screen.getByTestId('terminal-T2').props.accessibilityState.checked).toBe(true);
   await waitFor(() => expect(isDisabled(continueButton())).toBe(false));
   await press(continueButton());
@@ -121,7 +121,7 @@ test('a session that ends while filling the form goes back to login without savi
 
 test('an unsaved trip form is never shown to another account, and is forgotten on logout', async () => {
   const first = await openTripDetails();
-  await typeInto(screen.getByTestId('destination-input'), 'Bandra West');
+  await chooseDestination('Bandra West');
   // Log out on purpose from the account menu
   await press(screen.getByLabelText(`Account menu for ${first.name}`));
   jest.spyOn(Alert, 'alert').mockImplementation((title, message, buttons) => {
@@ -135,7 +135,7 @@ test('an unsaved trip form is never shown to another account, and is forgotten o
   await typeInto(screen.getByLabelText('Password'), first.password);
   await press(screen.getByText('Log in'));
   expect(await screen.findByText('Where are you headed?')).toBeTruthy();
-  expect(screen.getByTestId('destination-input').props.value).toBe('');
+  expect(screen.getByLabelText('Destination: not chosen')).toBeTruthy();
 });
 
 // ---- 3, 4, 5: the fields -----------------------------------------------------
@@ -158,28 +158,93 @@ test('pickup: airport terminals, or another pickup point', async () => {
   expect(screen.getByTestId('terminal-T2').props.accessibilityState.checked).toBe(false); // choose again
 });
 
-test('destination: suggestions match from the start of a word; any area can be typed', async () => {
+test('destination: a searchable list grouped as Mumbai and Navi Mumbai, plus Others', async () => {
   await openTripDetails();
-  const input = screen.getByTestId('destination-input');
-  await act(async () => fireEvent(input, 'focus'));
-  await typeInto(input, 'and');
+  await press(screen.getByTestId('destination-field'));
+  for (const group of ['Mumbai', 'Navi Mumbai']) expect(screen.getByRole('header', { name: group })).toBeTruthy();
+  expect(screen.getByTestId('destination-others')).toBeTruthy(); // in view without scrolling
+  for (const area of ['Colaba, Mumbai', 'Cuffe Parade, Mumbai', 'Vashi, Navi Mumbai', 'Kharghar, Navi Mumbai', 'Taloja, Navi Mumbai']) {
+    expect(screen.getByLabelText(area)).toBeTruthy();
+  }
+
+  // Search from the start of any word: "and" finds Andheri, not Bandra
+  await typeInto(screen.getByTestId('destination-search'), 'and');
   expect(screen.getByLabelText('Andheri West, Mumbai')).toBeTruthy();
-  expect(screen.getByLabelText('Andheri East, Mumbai')).toBeTruthy();
-  expect(screen.queryByLabelText('Bandra West, Mumbai')).toBeNull(); // "and" inside a word
+  expect(screen.getByLabelText('Andheri, Mumbai')).toBeTruthy();
+  expect(screen.queryByLabelText('Bandra West, Mumbai')).toBeNull();
+  expect(screen.getByTestId('destination-others')).toBeTruthy(); // always offered
+  await typeInto(screen.getByTestId('destination-search'), 'kh');
+  expect(screen.getByLabelText('Kharghar, Navi Mumbai')).toBeTruthy();
+  expect(screen.getByLabelText('Kopar Khairane, Navi Mumbai')).toBeTruthy();
+  expect(screen.queryByRole('header', { name: 'Mumbai' })).toBeNull(); // no Mumbai matches: that group is hidden
+  await typeInto(screen.getByTestId('destination-search'), 'csmt');
+  await press(screen.getByLabelText('CST / CSMT, Mumbai'));
+  expect(screen.getByLabelText('Destination: CST / CSMT')).toBeTruthy();
+  expect(screen.queryByTestId('destination-search')).toBeNull(); // closed
+  expect(screen.queryByTestId('destination-input')).toBeNull(); // no text field for a listed area
 
-  await press(screen.getByLabelText('Andheri West, Mumbai'));
-  expect(screen.getByTestId('destination-input').props.value).toBe('Andheri West');
-  expect(screen.queryByLabelText('Andheri East, Mumbai')).toBeNull(); // list closed
+  await chooseDestination('Kharghar');
+  expect(screen.getByLabelText('Destination: Kharghar')).toBeTruthy();
+});
 
-  await typeInto(screen.getByTestId('destination-input'), 'Versova Fish Market');
-  expect(screen.getByTestId('destination-input').props.value).toBe('Versova Fish Market');
+test('Others: the destination must be typed; it is saved as typed (trimmed) and kept when editing', async () => {
+  const user = await openTripDetails();
+  await press(screen.getByTestId('terminal-T2'));
+  await press(screen.getByTestId('destination-field'));
+  await press(screen.getByTestId('destination-others'));
+  expect(screen.getByLabelText('Destination: Others')).toBeTruthy();
+  expect(screen.getByTestId('destination-input').props.value).toBe(''); // never "Others" itself
+  await pick('Travel date', 'date', isoToPickerDate(IN_3_DAYS()));
+  await pick('Expected landing time', 'time', new Date(2000, 0, 1, 18, 30));
+
+  // Empty (or only spaces): required
+  await typeInto(screen.getByTestId('destination-input'), '   ');
+  expect(isDisabled(continueButton())).toBe(true);
+  expect(screen.getByText('Enter your destination.')).toBeTruthy();
+  expect(tripPosts()).toEqual([]);
+
+  await typeInto(screen.getByTestId('destination-input'), '  Hiranandani   Estate, Thane West ');
+  await waitFor(() => expect(isDisabled(continueButton())).toBe(false));
+  await press(continueButton());
+  await waitFor(async () => expect(await serverTrips(user)).toHaveLength(1));
+  const [saved] = await serverTrips(user);
+  expect(saved.destination).toBe('Hiranandani Estate, Thane West');
+  expect(JSON.parse(tripPosts()[0].data).destination).toBe('Hiranandani Estate, Thane West');
+
+  // Editing the trip: "Others" is still chosen and the typed place is kept
+  await launchApp(`/trip/${saved.id}/details`);
+  await screen.findByTestId('destination-field');
+  expect(screen.getByLabelText('Destination: Others')).toBeTruthy();
+  expect(screen.getByTestId('destination-input').props.value).toBe('Hiranandani Estate, Thane West');
+});
+
+test('airports: Mumbai or Navi Mumbai; Navi Mumbai has one terminal, so none is asked for', async () => {
+  const user = await openTripDetails();
+  expect(screen.getByTestId('airport-BOM').props.accessibilityState.checked).toBe(true); // the default
+  expect(screen.getByTestId('terminal-T1')).toBeTruthy();
+
+  await press(screen.getByTestId('airport-NMI'));
+  expect(screen.getByTestId('airport-NMI').props.accessibilityState.checked).toBe(true);
+  expect(screen.getByTestId('single-terminal')).toHaveTextContent(/Terminal 1/);
+  expect(screen.queryByTestId('terminal-T2')).toBeNull();
+  await chooseDestination('Vashi');
+  await pick('Travel date', 'date', isoToPickerDate(IN_3_DAYS()));
+  await pick('Expected landing time', 'time', new Date(2000, 0, 1, 18, 30));
+  await waitFor(() => expect(isDisabled(continueButton())).toBe(false));
+  await press(continueButton());
+
+  await waitFor(async () => expect(await serverTrips(user)).toHaveLength(1));
+  const [saved] = await serverTrips(user);
+  expect(saved).toMatchObject({ pickupLocation: 'Navi Mumbai International Airport', airport: 'NMI', pickupTerminal: 'T1', destination: 'Vashi' });
+  // Shown with its airport on the next screen
+  expect(await screen.findByText('Navi Mumbai Airport (NMI) · T1 → Vashi')).toBeTruthy();
 });
 
 test('pickup and destination cannot be the same', async () => {
   await openTripDetails();
   await press(screen.getByText('Not at the airport? Use another pickup point'));
   await typeInto(screen.getByTestId('pickup-input'), 'Powai');
-  await typeInto(screen.getByTestId('destination-input'), 'powai ');
+  await chooseDestination('Powai');
   expect(screen.getByText('Destination must be different from the pickup location.')).toBeTruthy();
   expect(isDisabled(continueButton())).toBe(true);
 });
@@ -258,7 +323,7 @@ test('an incomplete form cannot be sent and says what is missing', async () => {
   expect(tripPosts()).toHaveLength(0);
 
   await press(screen.getByTestId('terminal-T1'));
-  await typeInto(screen.getByTestId('destination-input'), 'Juhu');
+  await chooseDestination('Juhu');
   expect(screen.getByText('Still needed: travel date, landing time.')).toBeTruthy();
 });
 
@@ -333,7 +398,7 @@ test('a trip from another pickup point is saved without a terminal', async () =>
   const user = await openTripDetails();
   await press(screen.getByText('Not at the airport? Use another pickup point'));
   await typeInto(screen.getByTestId('pickup-input'), '  Hotel Sahara Star  ');
-  await typeInto(screen.getByTestId('destination-input'), 'Colaba');
+  await chooseDestination('Colaba');
   await pick('Travel date', 'date', isoToPickerDate(addDays(todayInMumbai(), 1)));
   await pick('Expected landing time', 'time', new Date(2000, 0, 1, 7, 5));
   await press(screen.getByTestId('passengers-more'));
@@ -368,10 +433,10 @@ test('Back from verification shows the same trip filled in; continuing again cre
 
   // Back: this trip's planning form, with everything still there
   await press(screen.getByLabelText('Back'));
-  await screen.findByTestId('destination-input'); // loaded (not just the title)
+  await screen.findByTestId('destination-field'); // loaded (not just the title)
   expect(screen.getByText('Your trip details')).toBeTruthy();
   expect(screen).toHavePathname(`/trip/${trip.id}/details`);
-  expect(screen.getByTestId('destination-input').props.value).toBe('Powai');
+  expect(screen.getByLabelText('Destination: Powai')).toBeTruthy();
   expect(screen.getByLabelText(`Travel date: ${formatDate(trip.travelDate)}`)).toBeTruthy();
   expect(screen.getByTestId('terminal-T2').props.accessibilityState.checked).toBe(true);
 
@@ -385,7 +450,7 @@ test('Back from verification shows the same trip filled in; continuing again cre
   // Back, change the destination: saved to the SAME trip (PATCH), then on
   await press(screen.getByLabelText('Back'));
   await screen.findByText('Your trip details');
-  await typeInto(screen.getByTestId('destination-input'), 'Juhu');
+  await chooseDestination('Juhu');
   expect(continueButton()).toHaveTextContent('Save changes and continue');
   network.requests.length = 0;
   await press(continueButton());

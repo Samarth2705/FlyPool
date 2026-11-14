@@ -40,8 +40,12 @@ export async function getTrip(tripId) {
 
 // Page 3: flight details + boarding pass / e-ticket ({ mimeType, dataBase64 }).
 // Returns the updated trip.
-export async function verifyFlight(tripId, details) {
-  const res = await api.post(`/trips/${tripId}/verification`, details);
+// onUploadProgress (optional): called with a number from 0 to 1 while the
+// request is being sent, so the page can show upload progress.
+export async function verifyFlight(tripId, details, { onUploadProgress } = {}) {
+  const res = await api.post(`/trips/${tripId}/verification`, details, {
+    onUploadProgress: onUploadProgress && ((event) => event.total && onUploadProgress(event.loaded / event.total)),
+  });
   return res.data.data.trip;
 }
 
@@ -63,5 +67,61 @@ export async function getRide(tripId) {
 // Returns { trip, ride }.
 export async function chooseRide(tripId, choice) {
   const res = await api.put(`/trips/${tripId}/ride`, choice);
+  return res.data.data;
+}
+
+// ---- live ride activity (polled while a ride screen is open) ----------------
+
+// { serverTime, pollAfterMs, activity: { othersConsidering }, pools, myPool, booked }
+// All counts and seats come from the database. Only READS (and renews this
+// passenger's "choosing a ride" status) - safe to repeat.
+export async function getLiveRide(tripId, { signal } = {}) {
+  const res = await api.get(`/trips/${tripId}/live`, { signal });
+  return res.data.data;
+}
+
+// The passenger left the ride screens: stop counting them at once (the
+// server also forgets them by itself after 30 s).
+export async function leaveLiveRide(tripId) {
+  await api.delete(`/trips/${tripId}/live`);
+}
+
+// ---- booking -----------------------------------------------------------------
+
+// The booking and what can be done with it:
+// { trip, ride, booking, pastBookings, status: { code, label }, timeline,
+//   actions: { cancel: { allowed, reason }, leavePool: { allowed, reason } } }
+export async function getBooking(tripId) {
+  const res = await api.get(`/trips/${tripId}/booking`);
+  return res.data.data;
+}
+
+// Confirm the chosen ride. `reviewed` is what the passenger saw: { mode,
+// vehicleType, poolId, yourShare } - if the ride changed since, the server
+// refuses (409 BOOKING_REVIEW_CHANGED) instead of booking something else.
+// Safe to repeat: an already confirmed booking is returned (created: false),
+// never a second one. Returns { booking, trip, ride, created }.
+export async function confirmBooking(tripId, reviewed) {
+  const res = await api.post(`/trips/${tripId}/booking`, reviewed, { timeout: 20000 });
+  return res.data.data;
+}
+
+// Cancel the booking - and its trip. Returns the updated booking view (as getBooking).
+export async function cancelBooking(tripId, reason) {
+  const res = await api.post(`/trips/${tripId}/booking/cancel`, reason ? { reason } : {});
+  return res.data.data;
+}
+
+// Leave the shared ride: the booking ends, the trip goes on (choose a ride
+// again). Returns the updated booking view (as getBooking).
+export async function leaveSharedRide(tripId) {
+  const res = await api.post(`/trips/${tripId}/booking/leave-pool`, {});
+  return res.data.data;
+}
+
+// Payment status for the booking (read-only here):
+// { mode, demo, payment: null | { status, amount, ... }, amount, canPay, ... }
+export async function getPayment(tripId) {
+  const res = await api.get(`/trips/${tripId}/payment`);
   return res.data.data;
 }

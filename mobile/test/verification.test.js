@@ -3,8 +3,9 @@
 // Android (see "projects" in package.json).
 //
 // Nothing the server says is mocked: every verification result here is the
-// server's own (its demo consistency checks), and every document sent is a
-// real file read from disk. Only the phone's native modules are stand-ins
+// server's own. The server READS the document (OCR, PDF text, barcodes) and
+// checks it against the trip, so each test uploads a ticket generated for its
+// own trip (test/tickets.js) - or deliberately one that doesn't match. Only the phone's native modules are stand-ins
 // (file picker, camera, image encoder - see test/setup.js).
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,6 +14,7 @@ import { screen, within } from 'expo-router/testing-library';
 import api from '../src/api/client';
 import { addDays, todayInMumbai } from '../src/shared/dates';
 import { act, launchApp, press, signedInUser, typeInto, waitFor } from './helpers';
+import { testImage, ticketImage, ticketLines, ticketPdf } from './tickets';
 
 const network = globalThis.network;
 const device = globalThis.device;
@@ -20,9 +22,11 @@ const MB = 1024 * 1024;
 const AIRPORT = 'Chhatrapati Shivaji Maharaj International Airport, Mumbai';
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', name));
-const PDF = fixture('e-ticket.pdf');
-const JPG = fixture('boarding-pass.jpg');
-const PNG = fixture('boarding-pass.png');
+// A screenshot of something else entirely (the React Native developer menu)
+const RANDOM_JPG = fixture('random-screenshot.jpg');
+// Tickets for a trip: the passenger's name ("Asha Verma"), the flight, the trip's date
+const pdfFor = (trip, flight = {}) => ticketPdf(ticketLines({ date: trip.travelDate, ...flight }));
+const imageFor = (trip, flight = {}, format = 'png') => ticketImage({ date: trip.travelDate, ...flight }, format);
 
 const auth = (user) => ({ headers: { Authorization: `Bearer ${user.token}` } });
 const verifyButton = () => screen.getByTestId('verify');
@@ -137,6 +141,7 @@ test("someone else's trip is not found", async () => {
 
 test('PDF e-ticket: picked, shown, sent with the trip id and token, trip verified in the database', async () => {
   const { user, trip } = await openVerify();
+  const PDF = pdfFor(trip);
   const uri = await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
 
   expect(await screen.findByTestId('ticket-pdf')).toBeTruthy();
@@ -169,6 +174,10 @@ test('PDF e-ticket: picked, shown, sent with the trip id and token, trip verifie
   expect(saved.status).toBe('flight_verified');
   expect(saved.flight).toMatchObject({ airline: 'IndiGo', flightNumber: '6E2134', scheduledArrivalTime: '18:30', arrivalAirport: 'BOM', arrivalTerminal: 'T2' });
   expect(saved.verification).toMatchObject({ status: 'verified', method: 'demo', document: { kind: 'pdf', sizeBytes: PDF.length } });
+  // What the server read from it - facts only, not the text or the name
+  expect(saved.verification.extraction).toMatchObject({ status: 'read', source: 'pdf_text', flightNumbers: ['6E2134'], nameMatched: true, airportFound: true });
+  expect(saved.verification.extraction.dates).toContain(trip.travelDate);
+  expect(JSON.stringify(saved)).not.toContain('ASHA VERMA');
   expect(JSON.stringify(saved)).not.toContain(PDF.toString('base64').slice(0, 40)); // the document itself isn't stored
 
   // The result screen shows what the server saved - and doesn't overclaim
@@ -180,21 +189,25 @@ test('PDF e-ticket: picked, shown, sent with the trip id and token, trip verifie
 
 test('JPG boarding pass: preview shown, sent unchanged', async () => {
   const { user, trip } = await openVerify();
+  const JPG = imageFor(trip, { airline: 'Air India', flightNumber: 'AI 101' }, 'jpeg');
   const uri = await uploadFile('boarding-pass.jpg', JPG, 'image/jpeg');
   const preview = await screen.findByTestId('ticket-preview');
   expect(preview.props.source).toEqual({ uri });
-  expect(screen.getByTestId('ticket-info')).toHaveTextContent('Image · 45 KB');
+  expect(screen.getByTestId('ticket-info')).toHaveTextContent(`Image · ${Math.round(JPG.length / 1024)} KB`);
 
   await enterFlight('AI 101');
   expect(screen.getByTestId('airline').props.value).toBe('Air India');
   const result = await verifyAndExpectSuccess(trip);
   expect(sentDocument(trip)).toEqual({ mimeType: 'image/jpeg', dataBase64: JPG.toString('base64') });
-  expect((await serverTrip(user, trip)).verification.document).toMatchObject({ kind: 'image', sizeBytes: JPG.length });
+  const saved = (await serverTrip(user, trip)).verification;
+  expect(saved.document).toMatchObject({ kind: 'image', sizeBytes: JPG.length });
+  expect(saved.extraction).toMatchObject({ status: 'read', source: 'ocr', flightMatched: true }); // read with OCR
   expect(result.getByText('Photo checked, not stored')).toBeTruthy();
 });
 
 test('PNG screenshot: sent as PNG', async () => {
   const { user, trip } = await openVerify();
+  const PNG = imageFor(trip, { airline: 'Akasa Air', flightNumber: 'QP 1402' });
   await uploadFile('Screenshot 2026-11-06.png', PNG, 'image/png');
   expect(await screen.findByTestId('ticket-preview')).toBeTruthy();
   await enterFlight('QP 1402');
@@ -205,7 +218,7 @@ test('PNG screenshot: sent as PNG', async () => {
 
 test('a file with no type is recognised by its extension', async () => {
   const { trip } = await openVerify();
-  await uploadFile('ticket.PDF', PDF, undefined); // some Android pickers leave the type out
+  await uploadFile('ticket.PDF', pdfFor(trip), undefined); // some Android pickers leave the type out
   expect(await screen.findByTestId('ticket-pdf')).toBeTruthy();
   await enterFlight();
   await verifyAndExpectSuccess(trip);
@@ -217,6 +230,8 @@ test('a file with no type is recognised by its extension', async () => {
 test('camera: asks permission, takes the photo, and it verifies', async () => {
   const { user, trip } = await openVerify();
   device.camera.onRequest = { granted: true, canAskAgain: true, status: 'granted' };
+  // A phone photo of a printed ticket: grain, blur, the table around it
+  const JPG = testImage({ kind: 'phonePhoto', lines: ticketLines({ date: trip.travelDate, airline: 'SpiceJet', flightNumber: 'SG 8152' }) });
   const uri = device.files.inCache('photo-1.jpg', JPG);
   device.camera.answer = { uri, width: 1200, height: 900, fileName: 'photo-1.jpg', mimeType: 'image/jpeg', fileSize: JPG.length };
 
@@ -234,14 +249,14 @@ test('camera: asks permission, takes the photo, and it verifies', async () => {
 });
 
 test('camera permission refused: explained, camera not opened, upload still possible', async () => {
-  await openVerify();
+  const { trip } = await openVerify();
   device.camera.onRequest = { granted: false, canAskAgain: true, status: 'denied' };
   await press(screen.getByTestId('ticket-camera'));
   expect(await screen.findByText(/FlyPool needs the camera to photograph your ticket/)).toBeTruthy();
   expect(device.camera.launches).toEqual([]);
   expect(screen.queryByTestId('open-settings')).toBeNull(); // can still be asked next time
 
-  await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
+  await uploadFile('e-ticket.pdf', pdfFor(trip), 'application/pdf');
   expect(await screen.findByTestId('ticket-pdf')).toBeTruthy();
   expect(screen.queryByTestId('ticket-error')).toBeNull();
 });
@@ -272,7 +287,7 @@ test('closing the camera or the file picker without choosing changes nothing', a
 
 test('a PDF over 3 MB is refused before anything is sent', async () => {
   const { trip } = await openVerify();
-  const big = Buffer.concat([PDF, Buffer.alloc(3.5 * MB, 0x20)]);
+  const big = Buffer.concat([pdfFor(trip), Buffer.alloc(3.5 * MB, 0x20)]);
   const uri = await uploadFile('scanned-ticket.pdf', big, 'application/pdf');
 
   expect(await screen.findByText(/That PDF is larger than 3 MB/)).toBeTruthy();
@@ -288,6 +303,8 @@ test('a PDF over 3 MB is refused before anything is sent', async () => {
 
 test('a large photo is made smaller (JPEG) so it fits, and verifies', async () => {
   const { trip } = await openVerify();
+  const JPG = imageFor(trip, {}, 'jpeg');
+  device.encoder.output = JPG; // what the (stand-in) encoder makes of it
   const big = Buffer.concat([JPG, Buffer.alloc(4 * MB)]); // a 4 MB+ photo
   const original = await uploadFile('IMG_2041.jpg', big, 'image/jpeg');
 
@@ -308,8 +325,8 @@ test('a large photo is made smaller (JPEG) so it fits, and verifies', async () =
 
 test('a photo that stays over 3 MB after compressing is refused, not uploaded', async () => {
   const { trip } = await openVerify();
-  device.encoder.output = Buffer.concat([JPG, Buffer.alloc(3.2 * MB)]); // the encoder can't get it small enough
-  await uploadFile('panorama.jpg', Buffer.concat([JPG, Buffer.alloc(5 * MB)]), 'image/jpeg');
+  device.encoder.output = Buffer.concat([RANDOM_JPG, Buffer.alloc(3.2 * MB)]); // the encoder can't get it small enough
+  await uploadFile('panorama.jpg', Buffer.concat([RANDOM_JPG, Buffer.alloc(5 * MB)]), 'image/jpeg');
 
   expect(await screen.findByText(/still larger than 3 MB after making it smaller/)).toBeTruthy();
   expect(device.encoder.calls.map((c) => [c.maxWidth, c.compress])).toEqual([
@@ -323,6 +340,7 @@ test('a photo that stays over 3 MB after compressing is refused, not uploaded', 
 
 test('an iPhone HEIC photo is converted to JPEG', async () => {
   const { trip } = await openVerify();
+  device.encoder.output = imageFor(trip, {}, 'jpeg'); // the HEIC photo, converted
   const heic = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypheic'), Buffer.alloc(2000)]);
   await uploadFile('IMG_0042.HEIC', heic, 'image/heic');
 
@@ -331,6 +349,47 @@ test('an iPhone HEIC photo is converted to JPEG', async () => {
   await enterFlight();
   await verifyAndExpectSuccess(trip);
   expect(sentDocument(trip).mimeType).toBe('image/jpeg');
+});
+
+// ---- Phase 15: the document must really be a matching ticket -------------------
+
+test('a random screenshot is refused: the server’s reason is shown and the trip stays unverified', async () => {
+  const { user, trip } = await openVerify();
+  await uploadFile('Screenshot.jpg', RANDOM_JPG, 'image/jpeg');
+  await enterFlight();
+  await press(verifyButton());
+
+  expect(await screen.findByText('Your flight couldn’t be verified')).toBeTruthy();
+  expect(screen.getByText(/doesn’t look like a boarding pass or e-ticket/)).toBeTruthy();
+  expect(screen.queryByText('Flight verified successfully.')).toBeNull();
+  expect(screen).toHavePathname(`/trip/${trip.id}/verify`);
+  const saved = await serverTrip(user, trip);
+  expect(saved.status).toBe('awaiting_verification');
+  expect(saved.verification.status).toBe('failed');
+});
+
+test('a completely black photo is refused as blank', async () => {
+  const { user, trip } = await openVerify();
+  await uploadFile('photo.jpg', testImage({ kind: 'blank', colour: '#000000', format: 'jpeg' }), 'image/jpeg');
+  await enterFlight();
+  await press(verifyButton());
+  expect(await screen.findByText(/Your document looks blank/)).toBeTruthy();
+  expect((await serverTrip(user, trip)).status).toBe('awaiting_verification');
+});
+
+test('a ticket for another flight or another day is refused, with what the ticket shows', async () => {
+  const { user, trip } = await openVerify();
+  await uploadFile('e-ticket.pdf', pdfFor(trip, { flightNumber: '6E 5321' }), 'application/pdf');
+  await enterFlight('6E 2134');
+  await press(verifyButton());
+  expect(await screen.findByText(/Your document shows flight 6E 5321, not 6E 2134/)).toBeTruthy();
+
+  const [y, m, d] = trip.travelDate.split('-').map(Number);
+  const otherDay = new Date(Date.UTC(y, m - 1, d + 5)).toISOString().slice(0, 10);
+  await uploadFile('e-ticket.pdf', ticketPdf(ticketLines({ date: otherDay })), 'application/pdf');
+  await press(verifyButton());
+  expect(await screen.findByText(/but your trip is on/)).toBeTruthy();
+  expect((await serverTrip(user, trip)).status).toBe('awaiting_verification');
 });
 
 test('unsupported file types are refused', async () => {
@@ -367,19 +426,23 @@ test('drop area: search, pick from the list, or use an area that is not listed',
   await typeInto(screen.getByTestId('drop-area-search'), 'and');
   expect(screen.getByLabelText('Andheri West, Mumbai')).toBeTruthy();
   expect(screen.getByLabelText('Andheri East, Mumbai')).toBeTruthy();
+  // Navi Mumbai areas are listed too, in their own group
+  await typeInto(screen.getByTestId('drop-area-search'), 'kharghar');
+  expect(screen.getByLabelText('Kharghar, Navi Mumbai')).toBeTruthy();
+  await typeInto(screen.getByTestId('drop-area-search'), 'and');
   expect(screen.queryByLabelText('Bandra West, Mumbai')).toBeNull();
   await press(screen.getByLabelText('Andheri West, Mumbai'));
   expect(screen.getByLabelText('Drop area: Andheri West')).toBeTruthy();
   expect(screen.queryByTestId('drop-area-search')).toBeNull(); // closed
 
   await press(screen.getByTestId('drop-area-field'));
-  await typeInto(screen.getByTestId('drop-area-search'), 'Dadar');
-  expect(screen.queryByLabelText('Dadar, Mumbai')).toBeNull(); // not on the shared list...
-  await press(screen.getByLabelText('Use Dadar')); // ...but any area is allowed
-  expect(screen.getByLabelText('Drop area: Dadar')).toBeTruthy();
+  await typeInto(screen.getByTestId('drop-area-search'), 'Versova');
+  expect(screen.queryByLabelText('Versova, Mumbai')).toBeNull(); // not on the shared list...
+  await press(screen.getByLabelText('Use Versova')); // ...but any area is allowed
+  expect(screen.getByLabelText('Drop area: Versova')).toBeTruthy();
   expect(screen.getByText('Your trip will be updated with this drop area.')).toBeTruthy();
 
-  await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
+  await uploadFile('e-ticket.pdf', pdfFor(trip), 'application/pdf');
   await enterFlight();
   const result = await verifyAndExpectSuccess(trip);
 
@@ -389,16 +452,16 @@ test('drop area: search, pick from the list, or use an area that is not listed',
     ['PATCH', `/trips/${trip.id}`],
     ['POST', `/trips/${trip.id}/verification`],
   ]);
-  expect(JSON.parse(writes[0].data)).toEqual({ destination: 'Dadar' });
+  expect(JSON.parse(writes[0].data)).toEqual({ destination: 'Versova' });
   expect(writes[0].authorization).toBe(`Bearer ${user.token}`);
   const saved = await serverTrip(user, trip);
-  expect(saved).toMatchObject({ destination: 'Dadar', status: 'flight_verified' });
-  expect(result.getByText('Dadar')).toBeTruthy(); // on the result
+  expect(saved).toMatchObject({ destination: 'Versova', status: 'flight_verified' });
+  expect(result.getByText('Versova')).toBeTruthy(); // on the result
 });
 
 test('an unchanged drop area is not re-sent', async () => {
   const { trip } = await openVerify();
-  await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
+  await uploadFile('e-ticket.pdf', pdfFor(trip), 'application/pdf');
   await enterFlight();
   await verifyAndExpectSuccess(trip);
   expect(network.requests.filter((r) => r.method === 'PATCH')).toEqual([]);
@@ -409,7 +472,7 @@ test('the drop area cannot be the pickup point', async () => {
   await press(screen.getByTestId('drop-area-field'));
   await typeInto(screen.getByTestId('drop-area-search'), 'hotel sahara star');
   await press(screen.getByLabelText('Use hotel sahara star'));
-  await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
+  await uploadFile('e-ticket.pdf', pdfFor(trip), 'application/pdf');
   await enterFlight();
   await press(verifyButton());
   expect(screen.getByText('Destination must be different from the pickup location.')).toBeTruthy();
@@ -430,7 +493,7 @@ test('missing details are listed and nothing is sent', async () => {
 
 test('a failed check shows the server’s message; fixing it and retrying works', async () => {
   const { user, trip } = await openVerify();
-  await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
+  await uploadFile('e-ticket.pdf', pdfFor(trip), 'application/pdf');
   await enterFlight('6E 2134');
   await typeInto(screen.getByTestId('airline'), 'Air India'); // doesn't match the 6E code
 
@@ -451,8 +514,8 @@ test('a failed check shows the server’s message; fixing it and retrying works'
 });
 
 test('an airline code the server cannot check is reported as such', async () => {
-  await openVerify();
-  await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
+  const { trip } = await openVerify();
+  await uploadFile('e-ticket.pdf', pdfFor(trip), 'application/pdf');
   await enterFlight('ZZ 123');
   expect(screen.getByText('Airline code ZZ isn’t one we can check yet.')).toBeTruthy();
   await typeInto(screen.getByTestId('airline'), 'Zed Air');
@@ -464,7 +527,7 @@ test('an airline code the server cannot check is reported as such', async () => 
 
 test('tapping Verify repeatedly sends one request', async () => {
   const { user, trip } = await openVerify();
-  await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
+  await uploadFile('e-ticket.pdf', pdfFor(trip), 'application/pdf');
   await enterFlight();
 
   const release = holdVerification();
@@ -482,7 +545,7 @@ test('tapping Verify repeatedly sends one request', async () => {
 
 test('offline: nothing is retried automatically; the passenger retries by hand', async () => {
   const { trip } = await openVerify();
-  await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
+  await uploadFile('e-ticket.pdf', pdfFor(trip), 'application/pdf');
   await enterFlight();
 
   network.mode = 'offline';
@@ -500,7 +563,7 @@ test('offline: nothing is retried automatically; the passenger retries by hand',
 
 test('a lost response: retrying finds the flight already verified - shown from the server, not assumed', async () => {
   const { user, trip } = await openVerify();
-  await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
+  await uploadFile('e-ticket.pdf', pdfFor(trip), 'application/pdf');
   await enterFlight();
 
   network.mode = 'lose-response'; // the server verifies; the answer never arrives
@@ -525,16 +588,19 @@ test('ticket contents and the token never reach the logs', async () => {
   for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
     jest.spyOn(console, level).mockImplementation((...args) => logs.push(args.map(String).join(' ')));
   }
+  const PDF = pdfFor(trip);
   await uploadFile('e-ticket.pdf', PDF, 'application/pdf');
   await enterFlight();
   await verifyAndExpectSuccess(trip);
   const all = logs.join('\n');
+  expect(all).not.toContain('ASHA VERMA'); // nor what was read from it
   expect(all).not.toContain(PDF.toString('base64').slice(0, 24));
   expect(all).not.toContain(user.token);
 });
 
 test('temporary copies are deleted on Remove, on Replace and when leaving the screen', async () => {
-  await openVerify();
+  const { trip } = await openVerify();
+  const PDF = pdfFor(trip);
   const first = await uploadFile('first.pdf', PDF, 'application/pdf');
   expect(await screen.findByTestId('ticket-pdf')).toBeTruthy();
   await press(screen.getByTestId('ticket-remove'));
@@ -543,7 +609,7 @@ test('temporary copies are deleted on Remove, on Replace and when leaving the sc
 
   const second = await uploadFile('second.pdf', PDF, 'application/pdf');
   await screen.findByTestId('ticket-pdf');
-  const third = await uploadFile('third.jpg', JPG, 'image/jpeg'); // Replace
+  const third = await uploadFile('third.jpg', RANDOM_JPG, 'image/jpeg'); // Replace
   await screen.findByTestId('ticket-preview');
   expect(device.files.exists(second)).toBe(false);
   expect(device.files.exists(third)).toBe(true);
@@ -560,7 +626,7 @@ test('an already verified trip shows its result instead of the form', async () =
   const trip = await createTrip(user);
   await api.post(
     `/trips/${trip.id}/verification`,
-    { airline: 'IndiGo', flightNumber: '6E 2134', scheduledArrivalTime: '19:05', document: { mimeType: 'image/png', dataBase64: PNG.toString('base64') } },
+    { airline: 'IndiGo', flightNumber: '6E 2134', scheduledArrivalTime: '19:05', document: { mimeType: 'application/pdf', dataBase64: pdfFor(trip).toString('base64') } },
     auth(user),
   );
   await launchApp(`/trip/${trip.id}/verify`);

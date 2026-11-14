@@ -4,8 +4,6 @@
 // Runs for iOS and Android. Every amount and status comes from the server;
 // the demo checkout's result is decided by the server too. No real money.
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import nodeAxios from 'axios/dist/node/axios.cjs';
 import { Alert as NativeAlert, StyleSheet } from 'react-native';
 import { screen, within } from 'expo-router/testing-library';
@@ -14,10 +12,10 @@ import { darkColors } from '../src/theme';
 import { addDays, todayInMumbai } from '../src/shared/dates';
 import { formatRupees } from '../src/shared/format';
 import { act, launchApp, newUserDetails, press, signedInUser, typeInto, waitFor } from './helpers';
+import { ticketFor } from './tickets';
 
 const network = globalThis.network;
 const AIRPORT = 'Chhatrapati Shivaji Maharaj International Airport, Mumbai';
-const PDF = fs.readFileSync(path.join(__dirname, 'fixtures', 'e-ticket.pdf'));
 const WEBHOOK_SECRET = 'mobile-test-webhook-secret'; // scripts/test-api.mjs
 
 const randomIp = () => `10.${200 + Math.floor(Math.random() * 50)}.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`;
@@ -53,7 +51,7 @@ async function verifiedTrip(token, slot, details = {}) {
     airline: 'IndiGo',
     flightNumber: '6E 2134',
     scheduledArrivalTime: slot.time,
-    document: { mimeType: 'application/pdf', dataBase64: PDF.toString('base64') },
+    document: await ticketFor(token, trip),
   };
   return (await server.post(`/trips/${trip.id}/verification`, verification, as(token))).data.data.trip;
 }

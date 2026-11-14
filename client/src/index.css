@@ -8,23 +8,57 @@
   color-scheme: dark;
 }
 
-/* App-wide font (loaded in index.html) */
+/* FlyPool design tokens.
+   brand  - "runway blue": buttons, links, selected states, focus rings
+   taxi   - Mumbai kaali-peeli yellow: used sparingly, always on dark ink
+            (logo mark, flight codes in the departure-board style)
+   Neutrals are Tailwind's slate. Every brand-on-white and white-on-brand
+   pair used for text meets WCAG AA (checked at 4.5:1 or better). */
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-}
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-/* Slowly moves dashed route lines forward (TravelBackdrop.jsx).
-   The dash pattern repeats every 12 units, so -120 loops seamlessly. */
-@keyframes route-flow {
-  to {
-    stroke-dashoffset: -120;
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfd8fe;
+  --color-brand-300: #91bdfb;
+  --color-brand-400: #5b98f6;
+  --color-brand-500: #3574ee;
+  --color-brand-600: #1f58d6;
+  --color-brand-700: #1a46b0;
+  --color-brand-800: #1b3d8e;
+  --color-brand-900: #1c3672;
+  --color-brand-950: #13213f;
+
+  --color-taxi: #ffc72c;
+  --color-ink: #0b1220;
+
+  /* Page / panel entrance. Plain CSS, so pages don't need an animation
+     library; use as motion-safe:animate-fade-up (skipped for reduced motion). */
+  --animate-fade-up: fade-up 0.25s ease-out;
+  @keyframes fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
   }
 }
 
-/* When a field is focused or scrolled to, keep it clear of the sticky navbar */
 @layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  /* When a field is focused or scrolled to, keep it clear of the sticky navbar */
   input,
-  button {
+  button,
+  [tabindex] {
     scroll-margin-top: 10rem;
+  }
+
+  /* Numbers line up in fares, times and counts */
+  .tabular {
+    font-variant-numeric: tabular-nums;
   }
 }

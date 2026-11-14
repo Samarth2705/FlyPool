@@ -1,18 +1,17 @@
-// Links shown when a trip page can't continue (trip not found, cancelled, ...)
-import { Link } from 'react-router';
-
-const link = 'text-sky-700 hover:underline dark:text-sky-400';
+// Ways out when a trip page can't continue (trip not found, cancelled, ...).
+// `children` are shown first, e.g. a page-specific "Try again" button.
+import { LinkButton } from './Button';
 
 export default function TripRecoveryLinks({ children }) {
   return (
-    <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm font-medium">
+    <div className="mt-4 flex flex-wrap gap-3">
       {children}
-      <Link to="/trips" className={link}>
+      <LinkButton to="/trips" variant="secondary" size="sm">
         My Trips
-      </Link>
-      <Link to="/trip/new" className={link}>
+      </LinkButton>
+      <LinkButton to="/trip/new" variant="ghost" size="sm">
         Plan a new trip
-      </Link>
+      </LinkButton>
     </div>
   );
 }
