@@ -5,15 +5,17 @@
 //   npm run identity:review -- approve <reference>   mark the passenger "verified"
 //   npm run identity:review -- reject <reference> [reason_code]   e.g. document_unreadable
 //
-// Approving or rejecting deletes the uploaded file from the database. Delete
-// any file saved with "show" as soon as you have looked at it. This is a
-// manual demo check - it does not confirm anything with an authority.
-// Uses the database in server/.env (MONGODB_URI).
+// Approving or rejecting deletes the uploaded file from the database, and the
+// copy "show" saved on this computer. This is a manual demo check - it does
+// not confirm anything with an authority.
+// Uses the database in server/.env (MONGODB_URI) and prints its name first.
+// Refuses any database whose name contains "preview" (e.g. flypool_preview).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import mongoose from 'mongoose';
 import { env } from '../config/env.js';
+import { databaseNameFromUri } from '../config/databaseName.js';
 import { User } from '../models/User.js';
 import { manualCheckDocument, pendingManualChecks, reviewManualCheck } from '../services/identity.service.js';
 
@@ -21,6 +23,9 @@ const EXTENSIONS = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.
 const [command = 'list', reference, reason] = process.argv.slice(2);
 
 async function main() {
+  // Checked BEFORE connecting: never a preview/test copy by accident
+  const name = databaseNameFromUri(env.mongodbUri) ?? '';
+  if (/preview/i.test(name)) throw new Error(`Refusing to review IDs in "${name}" - that is not the live FlyPool database.`);
   await mongoose.connect(env.mongodbUri, { serverSelectionTimeoutMS: 10000 });
   console.log(`Database: ${mongoose.connection.name}`);
 
@@ -47,6 +52,8 @@ async function main() {
 
   if (command === 'approve' || command === 'reject') {
     const { applied } = await reviewManualCheck(reference, command === 'approve' ? 'verified' : 'rejected', reason);
+    // The copy saved by "show" on this computer goes too
+    for (const ext of Object.values(EXTENSIONS)) fs.rmSync(path.join(os.tmpdir(), `flypool-id-${reference}${ext}`), { force: true });
     return console.log(applied ? `Done: ${command === 'approve' ? 'verified' : 'rejected'}. The uploaded file was deleted.` : 'Nothing changed: that check is not waiting for review.');
   }
 

@@ -102,6 +102,9 @@ if (isProduction) {
   if (flightVerificationMode === 'demo') {
     console.warn('[config] WARNING: FLIGHT_VERIFICATION_MODE=demo in production - flights are NOT checked with any airline.');
   }
+  if (identityProvider === 'manual') {
+    console.warn('[config] NOTE: IDENTITY_PROVIDER=manual in production - uploaded IDs are reviewed by hand (demo check, npm run identity:review).');
+  }
 }
 
 export const env = {

@@ -1806,6 +1806,29 @@ test('identity (manual demo check): upload -> pending -> verified or rejected; t
   assert.equal(await IdentityDocument.countDocuments({ userId: r.userId }), 0);
   assert.equal((await r.api('POST', '/identity/submit', { method: 'passport', consent: true, document: idFile() })).data.identity.attempts, 2);
 
+  // The safety indexes exist: unreviewed IDs are deleted after 14 days, one per user
+  const docIndexes = await IdentityDocument.collection.indexes();
+  assert.equal(docIndexes.find((i) => i.key.createdAt)?.expireAfterSeconds, 14 * 24 * 60 * 60);
+  assert.equal(docIndexes.find((i) => i.key.userId)?.unique, true);
+  assert.equal((await IdentityVerification.collection.indexes()).find((i) => i.key.userId)?.unique, true);
+
+  // The real review script: "show" saves a local copy; "approve" verifies and deletes the stored file AND that copy
+  const { execFileSync } = await import('node:child_process');
+  const os = await import('node:os');
+  const fs = await import('node:fs');
+  const s = await newUser();
+  await s.api('POST', '/identity/submit', { method: 'passport', consent: true, document: idFile() });
+  const sRef = (await IdentityVerification.findOne({ userId: s.userId })).providerReference;
+  const script = (...args) => execFileSync(process.execPath, ['src/scripts/reviewIdentity.js', ...args], { cwd: new URL('../..', import.meta.url), env: process.env, encoding: 'utf8' });
+  assert.match(script(), new RegExp(sRef)); // listed as waiting
+  const copy = `${os.tmpdir()}/flypool-id-${sRef}.pdf`;
+  assert.match(script('show', sRef), /Saved to/);
+  assert.equal(fs.existsSync(copy), true);
+  assert.match(script('approve', sRef), /verified\. The uploaded file was deleted/);
+  assert.equal(fs.existsSync(copy), false);
+  assert.equal(await IdentityDocument.countDocuments({ userId: s.userId }), 0);
+  assert.equal((await s.api('GET', '/identity')).data.identity.status, 'verified');
+
   // Deleting the account deletes a waiting file too
   assert.equal((await r.api('DELETE', '/auth/me', { password: 'secret123' })).status, 200);
   assert.equal(await IdentityDocument.countDocuments({ userId: r.userId }), 0);

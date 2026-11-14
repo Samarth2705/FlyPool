@@ -34,6 +34,7 @@ import { IdentityDocument, IDENTITY_DOCUMENT_TTL_SECONDS } from '../models/Ident
 import { AppError } from '../utils/AppError.js';
 import { env } from '../config/env.js';
 import { inspectDocument } from './flightVerification.service.js';
+import { ensureIndexes } from '../config/db.js';
 
 export const CONSENT_VERSION = '2026-11-identity-v1';
 const PENDING_EXPIRES_MS = 24 * 60 * 60 * 1000; // an unfinished session can be restarted after a day
@@ -212,13 +213,28 @@ export async function submitIdentityProof(userId, { method, consent, document })
   }
 
   const { facts, bytes } = inspectDocument(document); // 400 unless a real JPG/PNG/WebP/PDF of at most 3 MB
+
+  // Never store an ID unless its 14-day auto-delete (and one-per-user) indexes exist
+  try {
+    await ensureIndexes([IdentityDocument, IdentityVerification]);
+  } catch (err) {
+    console.error(`[identity] indexes not ready, upload refused: ${err.message}`);
+    throw new AppError(503, 'IDENTITY_UNAVAILABLE', 'Identity verification isn’t available right now. Please try again later.');
+  }
+
   const reference = `manual_${crypto.randomUUID()}`;
   const now = new Date();
-  await IdentityDocument.findOneAndUpdate(
-    { userId },
-    { $set: { reference, mimeType: document.mimeType, sizeBytes: facts.sizeBytes, data: bytes, createdAt: now } },
-    { upsert: true },
-  );
+  try {
+    await IdentityDocument.findOneAndUpdate(
+      { userId },
+      { $set: { reference, mimeType: document.mimeType, sizeBytes: facts.sizeBytes, data: bytes, createdAt: now } },
+      { upsert: true },
+    );
+  } catch (err) {
+    // Only the message is logged - never the error object, which could carry the file
+    console.error(`[identity] storing the ID failed: ${err.message}`);
+    throw new AppError(503, 'IDENTITY_UNAVAILABLE', 'Your ID couldn’t be saved right now. Please try again later.');
+  }
   const record = await IdentityVerification.findOneAndUpdate(
     { userId },
     {

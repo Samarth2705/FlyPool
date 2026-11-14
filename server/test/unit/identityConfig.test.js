@@ -14,6 +14,19 @@ Object.assign(process.env, {
 delete process.env.IDENTITY_PROVIDER;
 delete process.env.VERCEL_ENV;
 
+test('identity:review refuses a preview database before connecting', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const run = spawnSync(process.execPath, ['src/scripts/reviewIdentity.js', 'list'], {
+    cwd: new URL('../..', import.meta.url),
+    env: { ...process.env, NODE_ENV: 'development', MONGODB_URI: 'mongodb://127.0.0.1:1/flypool_preview' },
+    encoding: 'utf8',
+    timeout: 20000,
+  });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /Refusing to review IDs in "flypool_preview"/);
+  assert.doesNotMatch(run.stdout, /Database:/); // never connected
+});
+
 test('production without IDENTITY_PROVIDER: identity checks are off (no ID uploads)', async () => {
   const { env } = await import('../../src/config/env.js');
   assert.equal(env.isProduction, true);
