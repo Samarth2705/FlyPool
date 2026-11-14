@@ -11,7 +11,8 @@ process.env.FLIGHT_VERIFICATION_MODE = 'demo';
 
 const { inspectDocument, demoVerifier, verificationLevels } = await import('../../src/services/flightVerification.service.js');
 const { readTicketDocument, stopTicketReader, OCR_ENGINE_FILES } = await import('../../src/services/ticketReader.service.js');
-const { findDates, findFlightNumbers, nameAppears, parseBoardingPassBarcode, showsFlightNumber } = await import('../../src/services/ticketAnalysis.js');
+const { findDates, findFlightNumbers, parseBoardingPassBarcode, showsFlightNumber } = await import('../../src/services/ticketAnalysis.js');
+const { checkPassengerName } = await import('../../src/services/passengerName.js');
 const T = await import('../helpers/tickets.js');
 
 after(() => stopTicketReader());
@@ -169,6 +170,56 @@ test('a ticket in someone else’s name, or not to Mumbai, is rejected', async (
   assert.deepEqual(failedChecks(leaving), ['document_destination']);
 });
 
+// Phase 3B: the passenger name is compared with the PASSENGER-NAME FIELD only,
+// in full. Synthetic names and generated tickets only.
+test('passenger name, end to end: only the full name in the passenger field passes (PDF, OCR image, barcode)', async () => {
+  const nameCheck = (r) => r.checks.find((c) => c.name === 'passenger_name');
+  const asAccount = (passengerName) => ({ ...TRIP, passengerName });
+  const pdfFor = (name, extra = []) => T.ticketPdf([...lines({ name }), ...extra]);
+
+  // The audit's table: account name vs the ticket's passenger
+  for (const [account, onTicket, expected] of [
+    ['Rahul Verma', 'Rahul Sharma', false], // shared first name
+    ['Priya Sharma', 'Rahul Sharma', false], // shared surname
+    ['Indigo Delhi', 'Rahul Sharma', false], // airline and city on the ticket
+    ['Mumbai Passenger', 'Rahul Sharma', false], // city and label
+    ['Flight Gate', 'Rahul Sharma', false], // labels
+    ['Rahul Verma', 'Rahul Verma', true],
+    ['Verma Rahul', 'Rahul Verma', true],
+  ]) {
+    const r = await verifyUpload(pdfFor(onTicket), 'application/pdf', asAccount(account));
+    assert.equal(r.passed, expected, `${account} vs ${onTicket}`);
+    assert.deepEqual(failedChecks(r), expected ? [] : ['passenger_name'], `${account} vs ${onTicket}`);
+    assert.equal(r.extraction.nameMatched, expected);
+  }
+
+  // Read with OCR from an image: the same rules
+  const image = await T.ticketImage(lines({ name: 'MR RAHUL SHARMA' }));
+  assert.deepEqual(failedChecks(await verifyUpload(image, 'image/png', asAccount('Rahul Verma'))), ['passenger_name']);
+  assert.equal((await verifyUpload(image, 'image/png', asAccount('Rahul Sharma'))).passed, true);
+
+  // The account name elsewhere on the document (not as the passenger) does not count
+  const elsewhere = await verifyUpload(pdfFor('MR RAHUL SHARMA', ['Booked by: Asha Verma', 'Contact: ASHA VERMA']), 'application/pdf');
+  assert.deepEqual(failedChecks(elsewhere), ['passenger_name']);
+  assert.match(nameCheck(elsewhere).message, /doesn’t match the name on your FlyPool account/);
+
+  // No passenger-name field at all: refused with "upload a document that shows it" (the passenger can retry)
+  const noField = await verifyUpload(T.ticketPdf([...lines({ name: null }), 'Asha Verma']), 'application/pdf');
+  assert.equal(noField.passed, false);
+  assert.deepEqual(failedChecks(noField), ['passenger_name']);
+  assert.match(nameCheck(noField).message, /couldn’t find the passenger name on your document/);
+  assert.equal(verificationLevels('demo', noField).levels.detailsMatched, false);
+
+  // Boarding-pass barcode: it decides when present
+  const barcodeTicket = (bcbpName, printed = ['IndiGo BOARDING PASS']) => T.ticketImage(printed, { barcodeText: T.bcbp(bcbpName) });
+  assert.equal((await verifyUpload(await barcodeTicket({ surname: 'VERMA', given: 'ASHAMS' }), 'image/png')).passed, true); // title written on
+  const otherBarcode = await verifyUpload(await barcodeTicket({ surname: 'SHARMA', given: 'RAHUL MR' }, ['IndiGo BOARDING PASS', 'Passenger: ASHA VERMA']), 'image/png');
+  assert.deepEqual(failedChecks(otherBarcode), ['passenger_name']); // printed text can't overrule the barcode
+
+  // The messages never repeat the name read off the document
+  for (const r of [elsewhere, noField, otherBarcode]) assert.equal(/RAHUL|SHARMA/i.test(JSON.stringify(r)), false);
+});
+
 test('arrival airport: a printed route must ARRIVE at the airport (not just mention it); which airport is recorded', async () => {
   const pdf = (from, to, extra = []) => T.ticketPdf([...lines({ from, to }), ...extra]);
   const destination = (r) => r.checks.find((c) => c.name === 'document_destination');
@@ -270,9 +321,14 @@ test('OCR look-alikes: "AI 101" read as "Al 101" still matches; other numbers do
 
 test('flight numbers, names and boarding-pass barcodes are read', () => {
   assert.deepEqual(findFlightNumbers('Flight 6E 2134 / AI-101 / IGO 5321 / PNR X7K2QZ / Seat 14C / T2'), ['6E2134', '6E5321', 'AI101']);
-  assert.ok(nameAppears('VERMA/ASHA MS', 'Asha Verma'));
-  assert.ok(!nameAppears('SMITH/JOHN MR', 'Asha Verma'));
+  // Names: only the passenger-name field counts (full cases: passengerName.test.js)
+  assert.equal(checkPassengerName({ text: 'Passenger: VERMA/ASHA MS' }, 'Asha Verma').matched, true);
+  assert.equal(checkPassengerName({ text: 'Passenger: SMITH/JOHN MR' }, 'Asha Verma').matched, false);
+  assert.equal(checkPassengerName({ text: 'VERMA/ASHA MS' }, 'Asha Verma').matched, false); // no passenger field
   const pass = parseBoardingPassBarcode(T.bcbp({ surname: 'VERMA', given: 'ASHA MS' }), '2026-12-20');
+  assert.equal(pass.passengerName, 'VERMA/ASHA MS');
+  assert.equal(pass.nameMayBeTruncated, false);
+  assert.equal(parseBoardingPassBarcode(T.bcbp({ surname: 'SUBRAMANIANSWAMY', given: 'ASHA' }), '2026-12-20').nameMayBeTruncated, true);
   assert.equal(pass.flightNumber, '6E2134');
   assert.equal(pass.from, 'DEL');
   assert.equal(pass.to, 'BOM');

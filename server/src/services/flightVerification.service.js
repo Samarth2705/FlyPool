@@ -9,8 +9,9 @@
 //      (OCR for images, the text layer for PDFs).
 //   4. Consistency (demoVerifier below): the document must look like a
 //      boarding pass / e-ticket AND show the flight number entered, the trip's
-//      date, the trip's airport (Mumbai BOM or Navi Mumbai NMI) and the
-//      passenger's name. A mismatch is refused.
+//      date, the trip's airport (Mumbai BOM or Navi Mumbai NMI), and a
+//      passenger name that matches the account holder's full name
+//      (passengerName.js). A mismatch is refused.
 //   5. Authenticity: NOT ESTABLISHED. Nothing here contacts the airline. A
 //      fabricated document that contains the right text passes the checks
 //      above, so results are stored with method "demo" and labelled "demo
@@ -192,14 +193,16 @@ export function demoVerifier({ airline, flightNumber, travelDate, today, passeng
     );
   }
 
-  // 7. The account holder's name
-  add(
-    'passenger_name',
-    facts.nameMatched,
-    facts.nameMatched
-      ? 'Your name appears on the document.'
-      : 'We couldn’t find your name on the document. The ticket must be in the name on your FlyPool account.',
-  );
+  // 7. The account holder's name, compared with the document's PASSENGER NAME
+  //    only (passengerName.js) - never with the rest of the text. The name read
+  //    off the document is never shown, stored or logged.
+  let nameMessage = 'The passenger name on your document matches your FlyPool account.';
+  if (!facts.nameMatched) {
+    nameMessage = facts.nameFieldFound
+      ? 'The passenger name on your document doesn’t match the name on your FlyPool account. The ticket must be in your full name, as on your account.'
+      : 'We couldn’t find the passenger name on your document. Upload a ticket or boarding pass that clearly shows the passenger’s name.';
+  }
+  add('passenger_name', facts.nameMatched, nameMessage);
 
   // 8. Not in the past
   add('flight_date', travelDate >= today, travelDate >= today ? 'Flight date is today or later.' : 'The flight date has already passed.');

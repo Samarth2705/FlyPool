@@ -481,6 +481,15 @@ test('Phase 15: the document is read - blank, unrelated and mismatched tickets a
     [T.asDocument(await T.photoImage(), 'image/jpeg'), 'ticket_document', /doesn’t look like a boarding pass/],
     [ticketFor(p, { flightNumber: 'AI 456', date }), 'document_flight_number', /shows flight AI 456, not AI 123/],
     [ticketFor(p, { flightNumber: 'AI 123', date: '2027-01-22' }), 'document_date', /but your trip is on 15 Jan 2027/],
+    // Phase 3B: the passenger name must be the account holder's full name, in the passenger field
+    // (the account is "Test User <n>"; the tickets are synthetic)
+    [ticketFor(p, { flightNumber: 'AI 123', date, name: 'MR TEST SHARMA' }), 'passenger_name', /doesn’t match the name on your FlyPool account/], // first name only
+    [ticketFor(p, { flightNumber: 'AI 123', date, name: 'MR RAHUL USER' }), 'passenger_name', /doesn’t match the name on your FlyPool account/], // surname only
+    [
+      T.asDocument(T.ticketPdf([...T.ticketLines({ name: null, airline: 'Air India', flightNumber: 'AI 123', date }), `Booked by: ${p.name}`]), 'application/pdf'),
+      'passenger_name',
+      /couldn’t find the passenger name on your document/, // the name, but not as the passenger
+    ],
   ];
   for (const [document, check, message] of attempts) {
     const res = await send(document);
@@ -488,6 +497,7 @@ test('Phase 15: the document is read - blank, unrelated and mismatched tickets a
     assert.equal(res.error.code, 'VERIFICATION_FAILED');
     assert.match(res.error.message, message);
     assert.deepEqual(res.error.details.map((d) => d.name), [check]);
+    assert.equal(/SHARMA|RAHUL/i.test(JSON.stringify(res)), false); // the name read off a ticket is never sent back
   }
   let trip = (await p.api('GET', `/trips/${p.id}`)).data.trip;
   assert.equal(trip.status, 'awaiting_verification'); // nothing approved

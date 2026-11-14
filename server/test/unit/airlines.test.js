@@ -19,8 +19,10 @@ const verify = (airline, flightNumber, travelDate = '2026-10-20') =>
     flightNumber,
     travelDate,
     today: '2026-10-11',
-    passengerName: 'Test Passenger',
-    document: { readable: true, source: 'pdf_text', barcodes: [], text: ticketLines({ flightNumber, date: travelDate }).join('\n') },
+    // Synthetic name. ("Test Passenger" no longer works: "Passenger" is a ticket
+    // label, never accepted as a name - see test/unit/passengerName.test.js)
+    passengerName: 'Asha Verma',
+    document: { readable: true, source: 'pdf_text', barcodes: [], text: ticketLines({ name: 'MS ASHA VERMA', flightNumber, date: travelDate }).join('\n') },
   });
 
 test('flight numbers: IATA and ICAO codes, spaces, hyphens, leading zeros', () => {

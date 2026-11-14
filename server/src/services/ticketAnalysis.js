@@ -3,11 +3,13 @@
 //
 // Pure functions: no I/O, nothing logged, nothing stored. They only find
 // facts that can be compared with the trip (flight numbers, dates, whether
-// the trip's airport appears, whether the passenger's name appears). They cannot tell
+// the trip's airport appears, whether the passenger name matches the account -
+// passengerName.js). They cannot tell
 // whether a document is genuine - a convincing fake contains the same text.
 import { AIRLINES, parseFlightNumber } from '../data/airlines.js';
 import { AIRPORT_CODES, CITY_CODES } from '../data/airportCodes.js';
 import { AIRPORTS } from '../data/mumbaiAreas.js';
+import { checkPassengerName } from './passengerName.js';
 
 const KNOWN_AIRPORTS = AIRPORTS.map((a) => a.code); // BOM, NMI
 
@@ -139,15 +141,6 @@ export function mentionsAirport(text, code) {
 // Mumbai Airport or Navi Mumbai Airport, whichever (pickups away from an airport)
 export const mentionsMumbai = (text) => mentionsAirport(text, 'BOM') || mentionsAirport(text, 'NMI');
 
-// Does any part of the passenger's name (3+ letters, or the whole name if
-// shorter) appear as a word? "VERMA/ASHA MS" matches "Asha Verma".
-export function nameAppears(text, fullName = '') {
-  const words = new Set(normalizeText(text).split(/[^A-Z]+/).filter(Boolean));
-  const parts = String(fullName).toUpperCase().split(/[^A-Z]+/).filter(Boolean);
-  const meaningful = parts.filter((p) => p.length >= 3);
-  return (meaningful.length ? meaningful : parts).some((p) => words.has(p));
-}
-
 export function ticketTermsIn(text) {
   const t = normalizeText(text);
   return TICKET_TERMS.filter((term) => t.includes(term)).length;
@@ -155,7 +148,8 @@ export function ticketTermsIn(text) {
 
 // IATA Bar Coded Boarding Pass (Resolution 792), mandatory first leg:
 //   M1 NAME(20) E PNR(7) FROM(3) TO(3) CARRIER(3) FLIGHT(5) JULIAN-DAY(3) ...
-// Returns { passengerName, pnr, from, to, flightNumber, dates } or null.
+// Returns { passengerName, nameMayBeTruncated, pnr, from, to, flightNumber, dates } or null.
+// nameMayBeTruncated: the 20-character name field is full, so a long name may be cut short.
 export function parseBoardingPassBarcode(raw, travelDate) {
   const s = String(raw ?? '');
   if (!/^M[1-4]/.test(s) || s.length < 58) return null;
@@ -176,6 +170,7 @@ export function parseBoardingPassBarcode(raw, travelDate) {
   });
   return {
     passengerName: s.slice(2, 22).trim(),
+    nameMayBeTruncated: s.slice(2, 22).trimEnd().length === 20,
     pnr: s.slice(23, 30).trim(),
     from,
     to,
@@ -197,7 +192,8 @@ const dayBefore = (iso) => {
 export function analyzeTicket({ text = '', barcodes = [] }, { travelDate, passengerName, flightNumber = null, airport = null }) {
   const passes = barcodes.map((b) => parseBoardingPassBarcode(b, travelDate)).filter(Boolean);
   const wanted = airport ? [airport] : KNOWN_AIRPORTS;
-  const allText = [text, ...passes.map((p) => p.passengerName)].join('\n');
+  // Only the passenger-name field (barcode or labelled printed name) - never the whole document
+  const passenger = checkPassengerName({ text, passes }, passengerName);
   const flightNumbers = new Set(findFlightNumbers(text));
   passes.forEach((p) => p.flightNumber && flightNumbers.add(p.flightNumber));
   const dates = new Set(findDates(text, travelDate));
@@ -237,7 +233,9 @@ export function analyzeTicket({ text = '', barcodes = [] }, { travelDate, passen
         : KNOWN_AIRPORTS.find((code) => !wanted.includes(code) && mentionsAirport(text, code))) ?? null,
     // The airport (BOM / NMI) the flight arrives at, when the document shows exactly one; else null
     arrivalAirport: arrivingAt.length === 1 ? arrivingAt[0] : null,
-    nameMatched: nameAppears(allText, passengerName),
+    nameMatched: passenger.matched,
+    // whether a passenger-name field was read at all (not stored - it only picks the message)
+    nameFieldFound: passenger.found,
     ticketTerms: ticketTermsIn(text) + (passes.length ? 2 : 0),
   };
 }
