@@ -6,7 +6,7 @@
   "build": {
     "base": {
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://fly-pool-eta.vercel.app/api"
+        "EXPO_PUBLIC_API_URL": "https://fly-pool-hqpt.vercel.app/api"
       }
     },
     "development": {
