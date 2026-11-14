@@ -168,8 +168,14 @@ export function demoVerifier({ airline, flightNumber, travelDate, today, passeng
   //    pickup away from the airport)
   const tripAirport = airportByCode(airport);
   const airportLabel = tripAirport?.shortName ?? 'Mumbai or Navi Mumbai Airport';
+  // The direction counts whenever the document shows it (barcode or a printed
+  // route): a ticket for a flight LEAVING Mumbai doesn't verify an arrival.
   if (facts.airportIsOrigin) {
-    add('document_destination', false, `Your boarding pass is for a flight leaving ${tripAirport?.city ?? 'Mumbai'}. FlyPool needs your flight arriving there.`);
+    add(
+      'document_destination',
+      false,
+      `Your ${facts.boardingPassBarcode ? 'boarding pass' : 'ticket'} is for a flight leaving ${tripAirport?.city ?? 'Mumbai'}. FlyPool needs your flight arriving there.`,
+    );
   } else if (!facts.airportFound && facts.otherAirport && tripAirport) {
     add(
       'document_destination',
@@ -181,7 +187,7 @@ export function demoVerifier({ airline, flightNumber, travelDate, today, passeng
       'document_destination',
       facts.airportFound,
       facts.airportFound
-        ? `${airportLabel} appears on your document.`
+        ? `${airportByCode(facts.arrivalAirport)?.shortName ?? airportLabel} appears on your document.`
         : `We couldn’t find ${airportLabel} on your document. FlyPool is for flights arriving there.`,
     );
   }
@@ -201,7 +207,8 @@ export function demoVerifier({ airline, flightNumber, travelDate, today, passeng
   return {
     passed: checks.every((c) => c.passed),
     checks,
-    flight: parsed?.airline ? { airline: parsed.airline.name, flightNumber: parsed.normalized } : null,
+    // arrivalAirport: the Mumbai airport (BOM / NMI) the document shows the flight arriving at, or null
+    flight: parsed?.airline ? { airline: parsed.airline.name, flightNumber: parsed.normalized, arrivalAirport: facts.arrivalAirport } : null,
     extraction: extractionFacts(document, facts, entered?.airline ? entered.normalized : null),
   };
 }

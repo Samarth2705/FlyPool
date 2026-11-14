@@ -9,6 +9,7 @@ import {
   whyPoolRejects,
   normalizeFlightNumber,
   estimateForMembers,
+  sharedRideLockKeys,
 } from '../../src/services/matching.service.js';
 import { AIRPORT } from '../../src/data/mumbaiAreas.js';
 import { vehicleByType, MATCHING } from '../../src/config/pricing.js';
@@ -190,4 +191,34 @@ test('trips saved before airports were added are Mumbai Airport trips', () => {
   assert.equal(legacy.airport, 'BOM');
   assert.equal(legacy.pickupKey, 'BOM-T2'); // the key existing pools use
   assert.equal(isCompatible(legacy, trip({ destination: 'Powai' })), true);
+});
+
+test('shared-ride lock keys: any two compatible trips share one - also either side of midnight', () => {
+  const at = (iso, overrides = {}) =>
+    describeTrip({ _id: String(nextId++).padStart(24, '0'), userId: `u${nextId}`, pickupLocation: AIRPORT.name, pickupTerminal: 'T2', destination: 'Juhu', arrivalAt: new Date(iso), passengerCount: 1, luggageCount: 0, openToPooling: true, ...overrides });
+  const shares = (a, b, vehicle = 'sedan') => sharedRideLockKeys(a, vehicle).some((k) => sharedRideLockKeys(b, vehicle).includes(k));
+
+  // 23:50 on the 22nd and 00:10 on the 23rd (Mumbai time): compatible, different travel dates
+  const late = at('2026-12-22T23:50:00+05:30');
+  const early = at('2026-12-23T00:10:00+05:30');
+  assert.equal(isCompatible(late, early), true);
+  assert.equal(shares(late, early), true);
+  assert.equal(sharedRideLockKeys(late, 'sedan').length, 3);
+  assert.ok(sharedRideLockKeys(late, 'sedan').every((k) => k.startsWith('BOM-T2|sedan|')));
+
+  // Every pair of arrival times up to the full window apart shares a key (random times + the exact edge)
+  const W = MATCHING.arrivalWindowMinutes * 60 * 1000;
+  const start = new Date('2026-12-20T00:00:00+05:30').getTime();
+  for (let i = 0; i < 2000; i++) {
+    const t = start + Math.floor(Math.random() * 3 * 24 * 3600 * 1000);
+    const gap = i === 0 ? W : Math.floor(Math.random() * (W + 1));
+    assert.equal(shares(at(new Date(t).toISOString()), at(new Date(t + gap).toISOString())), true, `gap ${gap / 60000} min`);
+  }
+
+  // Never shared across vehicles, terminals or airports
+  assert.equal(sharedRideLockKeys(late, 'sedan').some((k) => sharedRideLockKeys(early, 'suv').includes(k)), false);
+  assert.equal(shares(late, at('2026-12-22T23:50:00+05:30', { pickupTerminal: 'T1' })), false);
+  assert.equal(shares(late, at('2026-12-22T23:50:00+05:30', { pickupLocation: 'Navi Mumbai International Airport', pickupTerminal: 'T1' })), false);
+  // Far apart (a day): no shared key, so unrelated groups never wait on each other
+  assert.equal(shares(late, at('2026-12-23T23:50:00+05:30')), false);
 });

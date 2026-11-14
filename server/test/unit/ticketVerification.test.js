@@ -139,7 +139,7 @@ test('10. a valid-looking ticket that matches the trip is accepted (PDF, PNG, JP
     assert.equal(r.extraction.source, source, label);
     assert.ok(r.extraction.flightNumbers.includes('6E2134'), label);
     assert.ok(r.extraction.dates.includes('2026-12-20'), label);
-    assert.deepEqual(r.flight, { airline: 'IndiGo', flightNumber: '6E2134' });
+    assert.deepEqual(r.flight, { airline: 'IndiGo', flightNumber: '6E2134', arrivalAirport: 'BOM' });
   }
 });
 
@@ -167,6 +167,50 @@ test('a ticket in someone else’s name, or not to Mumbai, is rejected', async (
     'image/png',
   );
   assert.deepEqual(failedChecks(leaving), ['document_destination']);
+});
+
+test('arrival airport: a printed route must ARRIVE at the airport (not just mention it); which airport is recorded', async () => {
+  const pdf = (from, to, extra = []) => T.ticketPdf([...lines({ from, to }), ...extra]);
+  const destination = (r) => r.checks.find((c) => c.name === 'document_destination');
+  const BOM_TRIP = { ...TRIP, airport: 'BOM' };
+  const NMI_TRIP = { ...TRIP, airport: 'NMI' };
+  const AWAY = { ...TRIP, airport: null }; // pickup away from the airport: either Mumbai airport
+
+  // Text-only tickets (no barcode) for a flight LEAVING the airport are refused
+  for (const [trip, from, city] of [[BOM_TRIP, 'BOM Mumbai T2', 'Mumbai'], [NMI_TRIP, 'NMI Navi Mumbai', 'Navi Mumbai'], [AWAY, 'BOM Mumbai T2', 'Mumbai']]) {
+    const r = await verifyUpload(pdf(from, 'DEL Delhi'), 'application/pdf', trip);
+    assert.deepEqual(failedChecks(r), ['document_destination'], `${trip.airport} trip, ticket leaving ${from}`);
+    assert.equal(destination(r).message, `Your ticket is for a flight leaving ${city}. FlyPool needs your flight arriving there.`);
+    assert.equal(r.flight.arrivalAirport, null);
+  }
+  // "DEL -> BOM" on one line counts as a route too
+  assert.deepEqual(failedChecks(await verifyUpload(pdf(null, null, ['BOM -> DEL']), 'application/pdf', BOM_TRIP)), ['document_destination']);
+
+  // Arriving there: accepted, and the airport recorded
+  for (const [trip, to, code] of [[BOM_TRIP, 'BOM Mumbai T2', 'BOM'], [NMI_TRIP, 'NMI Navi Mumbai T1', 'NMI'], [AWAY, 'NMI Navi Mumbai T1', 'NMI'], [AWAY, 'BOM Mumbai T1', 'BOM']]) {
+    const r = await verifyUpload(pdf('DEL Delhi', to), 'application/pdf', trip);
+    assert.equal(r.passed, true, `${trip.airport} trip, ticket to ${to}: ${JSON.stringify(failedChecks(r))}`);
+    assert.equal(r.flight.arrivalAirport, code);
+  }
+  // Pickup away from the airport: the message names the airport the ticket shows
+  assert.equal(destination(await verifyUpload(pdf('DEL Delhi', 'NMI Navi Mumbai T1'), 'application/pdf', AWAY)).message, 'Navi Mumbai Airport (NMI) appears on your document.');
+
+  // A return ticket shows both directions: the leg arriving in Mumbai counts
+  const returnTicket = await verifyUpload(pdf('DEL Delhi', 'BOM Mumbai T2', ['Return: BOM -> DEL']), 'application/pdf', BOM_TRIP);
+  assert.equal(returnTicket.passed, true, JSON.stringify(failedChecks(returnTicket)));
+  assert.equal(returnTicket.flight.arrivalAirport, 'BOM');
+
+  // The other Mumbai airport, or not Mumbai at all, are still refused
+  assert.match(destination(await verifyUpload(pdf('DEL Delhi', 'NMI Navi Mumbai'), 'application/pdf', BOM_TRIP)).message, /Your ticket is for Navi Mumbai Airport \(NMI\), but your trip is from Mumbai Airport \(BOM\)/);
+  assert.deepEqual(failedChecks(await verifyUpload(pdf('DEL Delhi', 'GOI Goa'), 'application/pdf', AWAY)), ['document_destination']);
+
+  // No route printed at all: the airport's name is still enough (direction unknown), as before
+  const noRoute = await verifyUpload(T.ticketPdf([...lines({ from: null, to: null }), 'Arriving Mumbai T2']), 'application/pdf', BOM_TRIP);
+  assert.equal(noRoute.passed, true, JSON.stringify(failedChecks(noRoute)));
+  // ... and for a pickup away from the airport, if both airports are named, which one stays unknown
+  const both = await verifyUpload(T.ticketPdf([...lines({ from: null, to: null }), 'Mumbai T2 / Navi Mumbai lounge offer']), 'application/pdf', AWAY);
+  assert.equal(both.passed, true, JSON.stringify(failedChecks(both)));
+  assert.equal(both.flight.arrivalAirport, null);
 });
 
 test('the entered details must still be consistent: airline name and past dates', async () => {

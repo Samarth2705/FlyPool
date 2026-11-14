@@ -208,6 +208,15 @@ export function analyzeTicket({ text = '', barcodes = [] }, { travelDate, passen
     if (fitting) dates.add(fitting);
   });
 
+  // Where the flight goes: the boarding-pass barcodes, else the routes printed
+  // on the document ("From: DEL ... To: BOM", "DEL -> BOM"). Only when neither
+  // is there can the airport merely be looked for by name (direction unknown).
+  const legs = passes.length ? passes : findRoutes(text);
+  const arrivals = legs.map((leg) => leg.to);
+  const arrivingAt = legs.length
+    ? [...new Set(arrivals.filter((code) => wanted.includes(code)))]
+    : wanted.filter((code) => mentionsAirport(text, code));
+
   return {
     boardingPassBarcode: passes.length > 0,
     flightNumbers: [...flightNumbers].sort(),
@@ -215,14 +224,19 @@ export function analyzeTicket({ text = '', barcodes = [] }, { travelDate, passen
     flightMatched: Boolean(flightNumber && (flightNumbers.has(flightNumber) || showsFlightNumber(text, flightNumber))),
     dates: [...dates].sort(),
     acceptedDates,
-    // The trip's airport on the document; from a barcode it must be the ARRIVAL airport
-    airportFound: passes.length ? passes.some((p) => wanted.includes(p.to)) : wanted.some((code) => mentionsAirport(text, code)),
-    airportIsOrigin: passes.length > 0 && passes.every((p) => wanted.includes(p.from)),
+    // The trip's airport (for a pickup away from the airport: either Mumbai
+    // airport) as the flight's ARRIVAL airport - from a barcode or a printed
+    // route whenever the document has one, otherwise named on it
+    airportFound: arrivingAt.length > 0,
+    // The flight only LEAVES from there (an outbound ticket or the wrong leg)
+    airportIsOrigin: legs.length > 0 && arrivingAt.length === 0 && legs.some((leg) => wanted.includes(leg.from)),
     // The other airport shown instead (e.g. a Navi Mumbai ticket for a Mumbai Airport trip)
     otherAirport:
-      (passes.length
-        ? passes.map((p) => p.to).find((code) => KNOWN_AIRPORTS.includes(code) && !wanted.includes(code))
+      (legs.length
+        ? arrivals.find((code) => KNOWN_AIRPORTS.includes(code) && !wanted.includes(code))
         : KNOWN_AIRPORTS.find((code) => !wanted.includes(code) && mentionsAirport(text, code))) ?? null,
+    // The airport (BOM / NMI) the flight arrives at, when the document shows exactly one; else null
+    arrivalAirport: arrivingAt.length === 1 ? arrivingAt[0] : null,
     nameMatched: nameAppears(allText, passengerName),
     ticketTerms: ticketTermsIn(text) + (passes.length ? 2 : 0),
   };
@@ -244,6 +258,25 @@ function airportIn(fragment) {
 
 // Departure and arrival airport from "From: DEL ... To: BOM" style labels.
 // null when the document doesn't say (never guessed from other text).
+const ONE_LINE_ROUTE = /\b([A-Z]{3})\s*(?:->|→|-|TO|>|\/)\s*([A-Z]{3})\b/;
+
+// Every route printed on the document: the From/To pair (findRoute) and each
+// one-line "DEL -> BOM" - a return ticket shows both directions. Only routes
+// between two different, known airports count.
+export function findRoutes(text) {
+  const routes = [];
+  const add = (from, to) => {
+    if (from && to && from !== to && !routes.some((r) => r.from === from && r.to === to)) routes.push({ from, to });
+  };
+  const first = findRoute(text);
+  add(first.from, first.to);
+  for (const line of normalizeText(text).split('\n')) {
+    const m = line.match(ONE_LINE_ROUTE);
+    if (m && AIRPORT_CODES[m[1]] && AIRPORT_CODES[m[2]]) add(m[1], m[2]);
+  }
+  return routes;
+}
+
 export function findRoute(text) {
   const lines = normalizeText(text).split('\n');
   const labelled = (labels) => {
@@ -259,7 +292,7 @@ export function findRoute(text) {
   // "DEL -> BOM" / "DEL - BOM" / "DEL TO BOM" on one line
   if (!from || !to) {
     for (const line of lines) {
-      const m = line.match(/\b([A-Z]{3})\s*(?:->|→|-|TO|>|\/)\s*([A-Z]{3})\b/);
+      const m = line.match(ONE_LINE_ROUTE);
       if (m && AIRPORT_CODES[m[1]] && AIRPORT_CODES[m[2]]) {
         from ??= m[1];
         to ??= m[2];

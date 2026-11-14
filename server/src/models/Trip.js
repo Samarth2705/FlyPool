@@ -31,7 +31,10 @@ const flightSchema = new Schema(
     flightNumber: { type: String, trim: true, maxlength: 10 }, // e.g. "6E2134"
     flightDate: { type: String }, // "2026-10-12" (= the trip's travelDate)
     scheduledArrivalTime: { type: String }, // "18:30", Mumbai time
-    arrivalAirport: { type: String }, // "BOM"
+    // "BOM" / "NMI": the pickup airport or, for a pickup away from the airport,
+    // the one the ticket shows the flight arriving at; null if it doesn't say
+    // which. (Such trips verified before 2026-11-15 were stored as "BOM".)
+    arrivalAirport: { type: String },
     arrivalTerminal: { type: String }, // "T1" / "T2" when known
   },
   { _id: false },

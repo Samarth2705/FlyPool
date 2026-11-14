@@ -151,6 +151,20 @@ export function whyPoolRejects(pool, me) {
   return null;
 }
 
+// The lock documents a passenger STARTING a shared ride writes to
+// (models/PoolLock.js), so that two compatible passengers starting one at the
+// same moment can't both create a ride. Compatible trips land at most
+// MATCHING.arrivalWindowMinutes (W) apart - possibly on different dates, either
+// side of midnight - so the keys use time, not the travel date: time is cut
+// into W-long slots (counted from 1970) and a trip takes its own slot and the
+// one either side. Two trips at most W apart are at most one slot apart, so
+// they always share at least one key; different pickups or vehicles never do.
+export function sharedRideLockKeys(me, vehicleType) {
+  const slotMs = MATCHING.arrivalWindowMinutes * 60 * 1000;
+  const slot = Math.floor(me.arrivalAt / slotMs);
+  return [slot - 1, slot, slot + 1].map((s) => `${me.pickupKey}|${vehicleType}|${s}`);
+}
+
 // Estimate for one cab with these described members (in this order).
 // No estimate for pickups away from the airport or unknown drop-off areas.
 export function estimateForMembers(vehicle, members) {

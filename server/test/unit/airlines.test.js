@@ -51,7 +51,7 @@ test('airline names match with common variations, not other airlines', () => {
 test('demo verification: deterministic results for the same input', () => {
   assert.equal(verify('IndiGo', '6E 2134').passed, true);
   assert.equal(verify('Indigo Airlines', 'IGO2134').passed, true);
-  assert.deepEqual(verify('IndiGo', '6E 2134').flight, { airline: 'IndiGo', flightNumber: '6E2134' });
+  assert.deepEqual(verify('IndiGo', '6E 2134').flight, { airline: 'IndiGo', flightNumber: '6E2134', arrivalAirport: 'BOM' });
   assert.equal(verify('IndiGo', 'AI 123').passed, false); // wrong airline
   assert.equal(verify('Indigo Airlines', 'AI 123').passed, false); // previously passed (name not in list)
   assert.equal(verify('Vistara', 'UK 945').passed, false); // unknown code is not treated as valid

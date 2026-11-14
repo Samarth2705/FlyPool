@@ -173,13 +173,18 @@ export async function verifyFlight(tripId, userId, { airline, flightNumber, sche
   };
 
   if (result.passed) {
+    // Arrival airport: the pickup airport (the verification checked the ticket
+    // arrives there). For a pickup away from the airport: the Mumbai airport
+    // the ticket shows the flight arriving at, or null if it doesn't say which -
+    // never assumed. The terminal is only known for airport pickups.
+    const pickupAirport = airportOfTrip(trip);
     trip.flight = {
       airline: result.flight.airline,
       flightNumber: result.flight.flightNumber,
       flightDate: trip.travelDate,
       scheduledArrivalTime,
-      arrivalAirport: airportOfTrip(trip)?.code ?? 'BOM',
-      arrivalTerminal: airportOfTrip(trip) ? trip.pickupTerminal : undefined,
+      arrivalAirport: pickupAirport?.code ?? result.flight.arrivalAirport ?? null,
+      arrivalTerminal: pickupAirport ? trip.pickupTerminal : undefined,
     };
     trip.expectedArrivalTime = scheduledArrivalTime;
     trip.arrivalAt = arrivalMoment(trip.travelDate, scheduledArrivalTime);

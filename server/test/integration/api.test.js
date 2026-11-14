@@ -1483,6 +1483,81 @@ test('airports: Navi Mumbai trips store their airport, are verified against it, 
   assert.ok((await A.api('GET', `/trips/${A.id}/ride`)).data.ride.pool.fare.roadKm < 20);
 });
 
+test('arrival airport: tickets must arrive (not leave); pickups away from the airport record the airport the ticket shows, never an assumed one', async () => {
+  const date = '2027-01-22';
+  const verify = (p, document) =>
+    p.api('POST', `/trips/${p.id}/verification`, { airline: 'Air India', flightNumber: 'AI123', scheduledArrivalTime: '10:00', document });
+  const unverified = async (trip) => {
+    const u = await newUser();
+    const created = await u.api('POST', '/trips', tripBody({ travelDate: date, ...trip }));
+    assert.equal(created.status, 201, JSON.stringify(created.error));
+    return { ...u, id: created.data.trip.id };
+  };
+
+  // Mumbai Airport trip: a PDF e-ticket for the flight LEAVING Mumbai is refused (no barcode needed)
+  const A = await unverified({});
+  const leaving = await verify(A, ticketFor(A, { date, from: 'BOM Mumbai T2', to: 'DEL Delhi' }));
+  assert.equal(leaving.status, 422);
+  assert.match(leaving.error.message, /a flight leaving Mumbai/);
+  assert.equal((await Trip.findById(A.id)).status, 'awaiting_verification');
+  const arriving = await verify(A, ticketFor(A, { date, from: 'DEL Delhi', to: 'BOM Mumbai T2' }));
+  assert.equal(arriving.status, 200, JSON.stringify(arriving.error));
+  assert.deepEqual([arriving.data.trip.flight.arrivalAirport, arriving.data.trip.flight.arrivalTerminal], ['BOM', 'T2']);
+
+  // Pickup away from the airport: the airport the ticket shows is stored - Navi Mumbai here, not "BOM"
+  const B = await unverified({ pickupLocation: 'Dadar Railway Station', pickupTerminal: null, destination: 'Colaba' });
+  assert.equal((await B.api('GET', `/trips/${B.id}`)).data.trip.airport, null);
+  assert.equal((await verify(B, ticketFor(B, { date, from: 'NMI Navi Mumbai', to: 'DEL Delhi' }))).status, 422); // leaving Navi Mumbai
+  assert.equal((await verify(B, ticketFor(B, { date, from: 'DEL Delhi', to: 'GOI Goa' }))).status, 422); // not to Mumbai at all
+  const nmi = await verify(B, ticketFor(B, { date, from: 'DEL Delhi', to: 'NMI Navi Mumbai T1' }));
+  assert.equal(nmi.status, 200, JSON.stringify(nmi.error));
+  assert.equal(nmi.data.trip.airport, null); // the PICKUP is still not an airport
+  assert.equal(nmi.data.trip.flight.arrivalAirport, 'NMI');
+  assert.equal(nmi.data.trip.flight.arrivalTerminal, undefined); // unknown for a pickup elsewhere
+  const stored = await Trip.findById(B.id).lean();
+  assert.deepEqual([stored.airport, stored.flight.arrivalAirport, stored.pickupTerminal], [null, 'NMI', null]);
+  // ... and still can't share (only airport pickups can), but can travel alone
+  assert.equal((await choose(B, { mode: 'shared', vehicleType: 'sedan' })).error.code, 'SHARING_UNAVAILABLE');
+  assert.equal((await choose(B, { mode: 'solo', vehicleType: 'sedan' })).status, 200);
+
+  // A ticket that names both airports without a route: verified, airport left unknown (null, not "BOM")
+  const C = await unverified({ pickupLocation: 'Dadar Railway Station', pickupTerminal: null, destination: 'Colaba' });
+  const bothNamed = T.ticketPdf([...T.ticketLines({ name: C.name, airline: 'Air India', flightNumber: 'AI123', date, from: null, to: null }), 'Mumbai T2 / Navi Mumbai lounge offer']);
+  const both = await verify(C, T.asDocument(bothNamed, 'application/pdf'));
+  assert.equal(both.status, 200, JSON.stringify(both.error));
+  assert.equal(both.data.trip.flight.arrivalAirport, null);
+
+  // Older records stay readable: a trip verified before this change with a pickup away from
+  // the airport has "BOM" stored; it is read, listed and cancelled as before
+  const D = await newUser();
+  const [old] = await Trip.collection.insertMany([
+    {
+      userId: new mongoose.Types.ObjectId(D.userId), pickupLocation: 'Dadar Railway Station', pickupTerminal: null, destination: 'Colaba',
+      travelDate: date, expectedArrivalTime: '10:00', arrivalAt: new Date(`${date}T10:00:00+05:30`), passengerCount: 1, luggageCount: 0,
+      openToPooling: true, status: 'flight_verified', verification: { status: 'verified', method: 'demo', checks: [] },
+      flight: { airline: 'Air India', flightNumber: 'AI123', flightDate: date, scheduledArrivalTime: '10:00', arrivalAirport: 'BOM' },
+      poolId: null, rideMode: null, booking: null, pastBookings: [], createdAt: new Date(), updatedAt: new Date(),
+    },
+  ]).then((r) => Object.values(r.insertedIds));
+  const read = await D.api('GET', `/trips/${old}`);
+  assert.equal(read.status, 200);
+  assert.deepEqual([read.data.trip.airport, read.data.trip.flight.arrivalAirport], [null, 'BOM']);
+  assert.equal((await D.api('GET', '/trips')).data.trips.length, 1);
+  assert.equal((await D.api('PATCH', `/trips/${old}`, { status: 'cancelled' })).data.trip.status, 'cancelled');
+});
+
+test('shared-ride locks: old date-based lock documents do not block or confuse new ones', async () => {
+  // A lock written by the previous version (key by travel date) is simply ignored
+  await PoolLock.create({ key: 'BOM-T2|sedan|2027-04-10', writes: 5 });
+  const F = await passenger({ travelDate: '2027-04-10', destination: 'Juhu', expectedArrivalTime: '09:00' });
+  const G = await passenger({ travelDate: '2027-04-10', destination: 'Juhu', expectedArrivalTime: '09:10' });
+  const [f, g] = await Promise.all([choose(F, { mode: 'shared', vehicleType: 'sedan' }), choose(G, { mode: 'shared', vehicleType: 'sedan' })]);
+  assert.equal(f.data.trip.poolId, g.data.trip.poolId);
+  assert.equal(await Pool.countDocuments({ 'members.tripId': { $in: [F.id, G.id] } }), 1);
+  assert.equal((await PoolLock.findOne({ key: 'BOM-T2|sedan|2027-04-10' })).writes, 5); // untouched
+  assert.ok((await PoolLock.countDocuments({ key: /^BOM-T2\|sedan\|\d+$/ })) >= 3); // the time-slot keys
+});
+
 test('destinations: listed areas, a typed "Others" destination (kept when editing), "Others"/empty refused; old trips still work', async () => {
   const u = await newUser();
   const date = '2027-01-21';
@@ -1859,6 +1934,22 @@ test('live: two passengers starting a shared ride at the same moment end up in O
   const [b1, b2] = [await winner.api('POST', `/trips/${winner.id}/booking`, {}), await winner.api('POST', `/trips/${winner.id}/booking`, {})];
   assert.equal(b1.data.booking.reference, b2.data.booking.reference);
   assert.equal(await Trip.countDocuments({ _id: winner.id, 'booking.status': 'confirmed' }), 1);
+});
+
+test('live: passengers landing either side of midnight who start a shared ride at the same moment still end up in ONE ride', async () => {
+  // Compatible (20 minutes apart) but on different travel dates
+  for (let round = 0; round < 4; round++) {
+    const day = 21 + round * 2;
+    const F = await passenger({ travelDate: `2027-03-${day}`, destination: 'Andheri West', expectedArrivalTime: '23:50' });
+    const G = await passenger({ travelDate: `2027-03-${day + 1}`, destination: 'Andheri West', expectedArrivalTime: '00:10' });
+    assert.ok((await options(F)).travellers.length === 1, 'they are compatible');
+    const [f, g] = await Promise.all([choose(F, { mode: 'shared', vehicleType: 'suv' }), choose(G, { mode: 'shared', vehicleType: 'suv' })]);
+    assert.equal(f.status, 200, JSON.stringify(f.error));
+    assert.equal(g.status, 200, JSON.stringify(g.error));
+    assert.equal(f.data.trip.poolId, g.data.trip.poolId, `round ${round}: one shared ride across midnight`);
+    assert.deepEqual([f.data.outcome, g.data.outcome].sort(), ['created', 'joined_existing']);
+    assert.equal(await Pool.countDocuments({ 'members.tripId': { $in: [F.id, G.id] } }), 1);
+  }
 });
 
 // ---- 7. data consistency after everything above ------------------------------------

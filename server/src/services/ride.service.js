@@ -33,6 +33,7 @@ import {
   whyPoolRejects,
   estimateForMembers,
   fitsVehicle,
+  sharedRideLockKeys,
 } from './matching.service.js';
 
 const includeDemo = () => !env.isProduction; // seeded sample data never matches in production
@@ -321,9 +322,9 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
   let previous = null; // the shared ride before this change, for notifications
   let outcome = null; // 'created' | 'joined_existing' | 'joined' | null
 
-  // Starting a shared ride: make sure this group's lock document exists
-  // (outside the transaction; harmless if it already does)
-  if (mode === 'shared' && !poolId) await ensurePoolLock(await poolLockKeyFor(tripId, userId, vehicleType));
+  // Starting a shared ride: make sure this trip's lock documents exist
+  // (outside the transaction; harmless if they already do)
+  if (mode === 'shared' && !poolId) await ensurePoolLocks(await poolLockKeysFor(tripId, userId, vehicleType));
 
   try {
     const saved = await mongoose.connection.transaction(async (session) => {
@@ -376,10 +377,12 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
           // Start a new shared ride - unless already alone in an open one of this vehicle
           const aloneInSameKind = inOpenPool && current.vehicleType === vehicleType && current.members.length === 1;
           if (!aloneInSameKind) {
-            // Only one passenger of this group starts a shared ride at a time:
-            // a simultaneous second one conflicts here and MongoDB runs its
-            // transaction again - after the first committed.
-            await PoolLock.updateOne({ key: poolLockKey(me, vehicleType, trip.travelDate) }, { $inc: { writes: 1 } }, { session });
+            // Only one of any two compatible passengers starts a shared ride at a
+            // time: they share at least one lock key (sharedRideLockKeys - by
+            // time, not date, so also either side of midnight), a simultaneous
+            // second one conflicts here and MongoDB runs its transaction again -
+            // after the first committed, so it finds and joins that ride.
+            await PoolLock.updateMany({ key: { $in: sharedRideLockKeys(me, vehicleType) } }, { $inc: { writes: 1 } }, { session });
             const existing = await openCompatiblePool(trip, me, vehicleType, session);
             if (existing) {
               // A compatible shared ride with room already exists (perhaps started a
@@ -442,20 +445,22 @@ export async function chooseRide(tripId, userId, { mode, vehicleType, poolId }) 
 
 // ---- one shared ride per group, and the live view ------------------------------
 
-// The group a new shared ride belongs to: pickup (airport + terminal), vehicle, date
-const poolLockKey = (me, vehicleType, travelDate) => `${me.pickupKey}|${vehicleType}|${travelDate}`;
-
-async function poolLockKeyFor(tripId, userId, vehicleType) {
+// The lock keys of this trip for a new shared ride of this vehicle
+async function poolLockKeysFor(tripId, userId, vehicleType) {
   const trip = await loadOwnTrip(tripId, userId);
-  return poolLockKey(describeTrip(trip), vehicleType, trip.travelDate);
+  return sharedRideLockKeys(describeTrip(trip), vehicleType);
 }
 
-async function ensurePoolLock(key) {
-  try {
-    await PoolLock.updateOne({ key }, { $setOnInsert: { key, writes: 0 } }, { upsert: true });
-  } catch (err) {
-    if (err.code !== 11000) throw err; // created by a simultaneous request: fine
-  }
+async function ensurePoolLocks(keys) {
+  await Promise.all(
+    keys.map(async (key) => {
+      try {
+        await PoolLock.updateOne({ key }, { $setOnInsert: { key, writes: 0 } }, { upsert: true });
+      } catch (err) {
+        if (err.code !== 11000) throw err; // created by a simultaneous request: fine
+      }
+    }),
+  );
 }
 
 // The oldest open shared ride of this vehicle that `me` may join, or null
