@@ -116,3 +116,90 @@ export const darkModeOf = (ticket) => sharp(ticket).negate({ alpha: false }).png
 
 // As the apps send it
 export const asDocument = (bytes, mimeType) => ({ mimeType, dataBase64: Buffer.from(bytes).toString('base64') });
+
+// ---- FlyPool DEMO boarding passes ------------------------------------------------
+// Synthetic, clearly marked "DEMO - NOT VALID FOR TRAVEL", for testing the
+// reading of a designed pass: two columns (pass + stub), a coloured header,
+// small labels printed ABOVE their values, a diagonal watermark and a QR code.
+// Not an airline layout; no PNR, seat, gate or terminal; the QR holds plain DEMO
+// text, never an airline boarding-pass barcode (BCBP).
+export const DEMO_PASS = { airline: 'IndiGo', flightNumber: '6E 9100', date: '2027-01-15', departure: '12:00 PM', from: ['DEL', 'Delhi'], to: ['BOM', 'Mumbai'] };
+
+export function demoQrText(pass) {
+  return [
+    'FLYPOOL DEMO BOARDING PASS',
+    'DEMO ONLY - NOT VALID FOR TRAVEL',
+    `Demo ID: FLYPOOL-DEMO-TEST-${pass.name.replace(/\W+/g, '').toUpperCase()}`,
+    `Passenger: ${pass.name}`,
+    `Flight: ${pass.flightNumber}`,
+    `From: ${pass.from[1]} (${pass.from[0]})`,
+    `To: ${pass.to[1]} (${pass.to[0]})`,
+    `Date: ${ticketDate(pass.date)}`,
+  ].join('\n');
+}
+
+// A QR code (PNG) of any text
+export async function qrCode(text, scale = 8) {
+  const out = await writeBarcode(text, { format: 'QRCode', scale });
+  if (out.error) throw new Error(out.error);
+  return Buffer.from(await out.image.arrayBuffer());
+}
+
+// The DEMO pass as an image (PNG, or JPEG with format: 'jpeg'), 1840 x 760 px
+export async function demoBoardingPassImage(details, { format = 'png' } = {}) {
+  const p = { ...DEMO_PASS, ...details };
+  const t = (x, y, size, text, { weight = 400, fill = '#0f1f3d', anchor = 'start' } = {}) =>
+    `<text x="${x}" y="${y}" font-family="Arial, Helvetica, sans-serif" font-size="${size}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}">${escapeXml(text)}</text>`;
+  const label = (x, y, text) => t(x, y, 24, text.toUpperCase(), { weight: 700, fill: '#5b6b8a' });
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="760">
+    <rect width="1840" height="760" fill="#ffffff"/>
+    <rect x="1320" y="0" width="520" height="760" fill="#eef4ff"/>
+    <rect x="0" y="0" width="1840" height="128" fill="#0b3d91"/>
+    <line x1="1320" y1="0" x2="1320" y2="760" stroke="#9fb5dc" stroke-width="4" stroke-dasharray="12 10"/>
+    <text x="920" y="430" font-family="Arial, Helvetica, sans-serif" font-size="92" font-weight="900" fill="#c62828" fill-opacity="0.17" text-anchor="middle" transform="rotate(-11 920 430)">DEMO - NOT VALID FOR TRAVEL</text>
+    ${t(52, 84, 48, p.airline, { weight: 700, fill: '#ffffff' })}
+    ${t(660, 80, 28, 'BOARDING PASS', { weight: 700, fill: '#ffffff', anchor: 'middle' })}
+    <rect x="1130" y="44" width="130" height="48" rx="10" fill="#ffffff"/>${t(1195, 80, 26, 'DEMO', { weight: 800, fill: '#b3261e', anchor: 'middle' })}
+    ${t(1580, 80, 28, 'DEMO PASS', { weight: 700, fill: '#ffffff', anchor: 'middle' })}
+    ${label(52, 200, 'Passenger')}
+    ${t(52, 262, 52, p.name.toUpperCase(), { weight: 700 })}
+    ${t(52, 400, 88, p.from[0], { weight: 800, fill: '#0b3d91' })}${t(52, 450, 28, p.from[1], { fill: '#5b6b8a' })}
+    ${t(720, 400, 88, p.to[0], { weight: 800, fill: '#0b3d91' })}${t(720, 450, 28, p.to[1], { fill: '#5b6b8a' })}
+    ${t(52, 500, 24, `From ${p.from[1]} (${p.from[0]}) to ${p.to[1]} (${p.to[0]})`, { fill: '#5b6b8a' })}
+    ${label(52, 590, 'Airline')}${label(370, 590, 'Flight')}${label(690, 590, 'Date')}${label(1010, 590, 'Departure')}
+    ${t(52, 640, 36, p.airline)}${t(370, 640, 36, p.flightNumber)}${t(690, 640, 36, ticketDate(p.date))}${t(1010, 640, 36, p.departure)}
+    ${t(52, 724, 21, 'DEMO document for testing. Not issued by any airline. Not valid for travel or check-in.', { fill: '#5b6b8a' })}
+    ${t(1580, 200, 30, p.name.toUpperCase(), { weight: 700, anchor: 'middle' })}
+    ${t(1580, 252, 28, `${p.flightNumber}  ${p.from[0]} - ${p.to[0]}`, { anchor: 'middle' })}
+  </svg>`;
+  const qr = await sharp(await qrCode(demoQrText(p))).resize(300, 300, { kernel: 'nearest' }).png().toBuffer();
+  const image = sharp(await sharp(Buffer.from(svg)).png().toBuffer()).composite([{ input: qr, left: 1430, top: 300 }]);
+  return format === 'jpeg' ? image.jpeg({ quality: 85 }).toBuffer() : image.png().toBuffer();
+}
+
+// The DEMO pass as a text PDF: one line per printed item, labels above values
+export function demoBoardingPassPdf(details) {
+  const p = { ...DEMO_PASS, ...details };
+  return ticketPdf([
+    'FlyPool DEMO boarding pass - not valid for travel',
+    'DEMO - NOT VALID FOR TRAVEL',
+    p.airline,
+    'BOARDING PASS DEMO',
+    'PASSENGER',
+    p.name.toUpperCase(),
+    p.from[0],
+    p.from[1],
+    p.to[0],
+    p.to[1],
+    `From ${p.from[1]} (${p.from[0]}) to ${p.to[1]} (${p.to[0]}) - ${p.from[0]} -> ${p.to[0]}`,
+    'AIRLINE',
+    p.airline,
+    'FLIGHT',
+    p.flightNumber,
+    'DATE',
+    ticketDate(p.date),
+    'DEPARTURE',
+    p.departure,
+    'DEMO document for testing. Not issued by any airline. Not valid for travel or check-in.',
+  ]);
+}

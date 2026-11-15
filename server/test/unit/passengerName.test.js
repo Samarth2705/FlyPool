@@ -158,3 +158,17 @@ test('passengerNameMatches compares exactly one field with one account name', ()
   assert.equal(passengerNameMatches('Asha Verma', ''), false);
   assert.equal(passengerNameMatches('', 'ASHA VERMA'), false);
 });
+
+test('a label printed above the name, read by OCR as one line ("PASSENGER SAMARTH VERMA")', () => {
+  assert.deepEqual(findPassengerNames('PASSENGER SAMARTH VERMA'), ['SAMARTH VERMA']);
+  assert.deepEqual(findPassengerNames('Passenger   juliet  '), ['JULIET']); // any case, extra spaces
+  assert.equal(matches('Samarth Verma', 'BOARDING PASS\nPASSENGER SAMARTH VERMA\nFLIGHT 6E 9100'), true);
+  assert.equal(matches('Juliet', 'PASSENGER JULIET'), true);
+  // Only a bare name: never a sentence, a plural label, or a line that goes on
+  assert.deepEqual(findPassengerNames('Passenger Asha Verma must report at the gate'), []);
+  assert.deepEqual(findPassengerNames('Passengers Asha Verma'), []);
+  assert.deepEqual(findPassengerNames('PASSENGER SAMARTH VERMA 6E 9100'), []);
+  assert.deepEqual(findPassengerNames('Passenger one two three four five'), []);
+  // ... and the name must still match the account in full
+  assert.equal(matches('Samarth Sharma', 'PASSENGER SAMARTH VERMA'), false);
+});

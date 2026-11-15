@@ -401,3 +401,70 @@ test('every OCR engine file listed for deployment exists', async () => {
   assert.equal(OCR_ENGINE_FILES.length, 6);
   for (const file of OCR_ENGINE_FILES) assert.ok(fs.existsSync(file), `missing: ${file}`);
 });
+
+// ---- FlyPool DEMO boarding passes (synthetic: "DEMO - NOT VALID FOR TRAVEL") ----------
+// A designed pass (coloured header, two columns, labels above values, diagonal
+// watermark, a QR code) must be read from a PDF, a PNG and a JPEG alike.
+const DEMO_TRIP = { airline: 'IndiGo', flightNumber: '6E 9100', travelDate: '2027-01-15', today: '2026-11-15', airport: 'BOM' };
+const DEMO_PASSENGERS = [
+  ['Juliet', 'JULIET'],
+  ['Samarth Verma', 'SAMARTH VERMA'],
+];
+
+test('DEMO boarding passes (JULIET, SAMARTH VERMA): passenger name and flight number are read from PDF, PNG and JPEG', async () => {
+  for (const [account, printed] of DEMO_PASSENGERS) {
+    const docs = [
+      ['PDF', T.demoBoardingPassPdf({ name: printed }), 'application/pdf'],
+      ['PNG', await T.demoBoardingPassImage({ name: printed }), 'image/png'],
+      ['JPEG', await T.demoBoardingPassImage({ name: printed }, { format: 'jpeg' }), 'image/jpeg'],
+    ];
+    for (const [kind, bytes, type] of docs) {
+      const label = `${printed} ${kind}`;
+      const r = await verifyUpload(bytes, type, { ...DEMO_TRIP, passengerName: account });
+      assert.equal(r.passed, true, `${label}: ${JSON.stringify(r.checks?.filter((c) => !c.passed) ?? r.error?.message)}`);
+      assert.ok(r.extraction.flightNumbers.includes('6E9100'), label);
+      assert.equal(r.extraction.nameMatched, true, label);
+      assert.deepEqual(r.flight, { airline: 'IndiGo', flightNumber: '6E9100', arrivalAirport: 'BOM' }, label);
+      assert.equal(r.extraction.boardingPassBarcode, false, label); // its QR is not an airline boarding-pass barcode
+    }
+  }
+});
+
+test('DEMO passes keep the full checks: another account name, or another flight, is refused', async () => {
+  const image = await T.demoBoardingPassImage({ name: 'SAMARTH VERMA' });
+  const otherName = await verifyUpload(image, 'image/png', { ...DEMO_TRIP, passengerName: 'Samarth Sharma' });
+  assert.deepEqual(failedChecks(otherName), ['passenger_name']);
+  const sharedFirstName = await verifyUpload(T.demoBoardingPassPdf({ name: 'JULIET' }), 'application/pdf', { ...DEMO_TRIP, passengerName: 'Juliet Rao' });
+  assert.deepEqual(failedChecks(sharedFirstName), ['passenger_name']);
+  const otherFlight = await verifyUpload(image, 'image/png', { ...DEMO_TRIP, passengerName: 'Samarth Verma', flightNumber: '6E 9101' });
+  assert.deepEqual(failedChecks(otherFlight), ['document_flight_number']);
+});
+
+test('a QR code never verifies a flight, even when its text matches the trip', async () => {
+  // Only the QR (with DEMO text naming the passenger, flight, route and date) - no printed ticket
+  const qrOnly = await sharp(await T.qrCode(T.demoQrText({ ...T.DEMO_PASS, name: 'JULIET' }), 10)).extend({ top: 60, bottom: 60, left: 60, right: 60, background: '#ffffff' }).png().toBuffer();
+  const r = await verifyUpload(qrOnly, 'image/png', { ...DEMO_TRIP, passengerName: 'Juliet' });
+  assert.equal(r.passed, false);
+  assert.equal(r.extraction.boardingPassBarcode, false);
+  assert.equal(r.extraction.nameMatched, false);
+  assert.equal(r.extraction.flightMatched, false);
+});
+
+test('flight numbers with and without a space; OCR reading the "E" of "6E" as "£" or "€"', () => {
+  for (const text of ['Flight: 6E 9100', 'FLIGHT 6E9100', 'flight 6e 9100', 'Flight:\n  6E   9100', 'IndiGo 6£9100 15 Jan 2027', 'IndiGo 6€ 9100']) {
+    assert.deepEqual(findFlightNumbers(text), ['6E9100'], text);
+    assert.equal(showsFlightNumber(text, '6E9100'), true, text);
+  }
+  // A price is never turned into a flight number, and other numbers still don't match
+  assert.deepEqual(findFlightNumbers('Fare £120 · Flight 6E 9100'), ['6E9100']);
+  assert.equal(showsFlightNumber('IndiGo 6£9101', '6E9100'), false);
+});
+
+test('an image that was hard to read says so in the "couldn’t find" messages', () => {
+  const doc = (confidence) => ({ readable: true, source: 'ocr', confidence, barcodes: [], text: 'IndiGo BOARDING PASS\nPassenger: JULIET\nTo: BOM Mumbai\nDate: 15 Jan 2027' });
+  const hard = demoVerifier({ ...DEMO_TRIP, passengerName: 'Juliet', document: doc(35) });
+  assert.deepEqual(failedChecks(hard), ['document_flight_number']);
+  assert.match(hard.checks.find((c) => !c.passed).message, /couldn’t find a flight number.*hard to read.*PDF/);
+  const clear = demoVerifier({ ...DEMO_TRIP, passengerName: 'Juliet', document: doc(90) });
+  assert.doesNotMatch(clear.checks.find((c) => !c.passed).message, /hard to read/);
+});

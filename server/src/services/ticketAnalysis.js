@@ -99,9 +99,13 @@ export function findDates(text, travelDate) {
   return [...found].sort();
 }
 
+// For flight numbers only: OCR reads the "E" of codes like "6E" as "£" or "€"
+// ("6£9100"). Only directly after a digit, so prices are never touched.
+const flightNumberText = (text) => normalizeText(text).replace(/(\d)[£€]/g, '$1E');
+
 // Flight numbers of known airlines, normalised like parseFlightNumber ("6E2134")
 export function findFlightNumbers(text) {
-  const t = normalizeText(text);
+  const t = flightNumberText(text);
   const found = new Set();
   for (const m of t.matchAll(/\b([A-Z][A-Z0-9]|[0-9][A-Z]|[A-Z]{3})[\s-]?(\d{1,4}[A-Z]?)\b/g)) {
     const parsed = parseFlightNumber(`${m[1]}${m[2]}`);
@@ -118,7 +122,7 @@ const lookAlikeKey = (s) => s.toUpperCase().replace(/[ILOQDSBZG|]/g, (c) => LOOK
 // Does the document show this flight number ("6E2134"), allowing for OCR look-alikes?
 export function showsFlightNumber(text, normalized) {
   const wanted = lookAlikeKey(normalized);
-  for (const m of normalizeText(text).matchAll(/(?:^|[^A-Z0-9])([A-Z0-9|]{2,3})[\s-]?([0-9OILSZBDQ|]{1,4}[A-Z]?)(?![A-Z0-9])/g)) {
+  for (const m of flightNumberText(text).matchAll(/(?:^|[^A-Z0-9])([A-Z0-9|]{2,3})[\s-]?([0-9OILSZBDQ|]{1,4}[A-Z]?)(?![A-Z0-9])/g)) {
     const digits = m[2].replace(/[OILSZBDQ|]/g, (c) => LOOK_ALIKES[c]).replace(/^0+(?=\d)/, '');
     if (lookAlikeKey(m[1] + digits) === wanted) return true;
   }

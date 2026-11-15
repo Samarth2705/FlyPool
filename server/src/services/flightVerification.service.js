@@ -45,6 +45,10 @@ const FILE_SIGNATURES = {
 
 export const ALLOWED_DOCUMENT_TYPES = Object.keys(FILE_SIGNATURES);
 
+// OCR confidence (0-100) below which an image counts as hard to read: clear
+// screenshots score 70-95, blurred or busy images less
+const LOW_OCR_CONFIDENCE = 60;
+
 // Checks an uploaded document's encoding, size and real file type.
 // Returns { facts: { kind, sizeBytes }, bytes } - the bytes stay in memory only.
 // Throws a 400 error if it is empty, too large, or not really a JPG/PNG/WebP/PDF.
@@ -109,6 +113,10 @@ export function demoVerifier({ airline, flightNumber, travelDate, today, passeng
     return { passed: false, checks, flight: null, extraction: { status: 'unreadable', problem: document?.problem ?? 'unknown' } };
   }
 
+  // An image OCR could only partly read: say so where something wasn't found
+  const hardToRead = /ocr/.test(document.source ?? '') && document.confidence != null && document.confidence < LOW_OCR_CONFIDENCE;
+  const readHint = hardToRead ? ' Parts of this image were hard to read - the e-ticket PDF or a sharper, straight-on screenshot usually works better.' : '';
+
   const entered = parseFlightNumber(flightNumber);
   const facts = analyzeTicket(document, { travelDate, passengerName, airport, flightNumber: entered?.airline ? entered.normalized : null });
   add(
@@ -120,7 +128,7 @@ export function demoVerifier({ airline, flightNumber, travelDate, today, passeng
   // 2. Does it look like a boarding pass / e-ticket at all? If not, stop here:
   //    flight numbers or dates "found" in a random photo would only confuse.
   if (facts.ticketTerms < 2) {
-    add('ticket_document', false, 'This doesn’t look like a boarding pass or e-ticket. Upload your airline ticket, not another photo or document.');
+    add('ticket_document', false, `This doesn’t look like a boarding pass or e-ticket. Upload your airline ticket, not another photo or document.${readHint}`);
     return { passed: false, checks, flight: null, extraction: extractionFacts(document, facts, entered?.airline ? entered.normalized : null) };
   }
   add('ticket_document', true, 'The document looks like a boarding pass or e-ticket.');
@@ -148,7 +156,7 @@ export function demoVerifier({ airline, flightNumber, travelDate, today, passeng
         `Your document shows flight ${facts.flightNumbers.map(showFlight).join(', ')}, not ${showFlight(parsed.normalized)}. Check the flight number.`,
       );
     } else {
-      add('document_flight_number', false, 'We couldn’t find a flight number on your document. Upload a clearer copy of your ticket.');
+      add('document_flight_number', false, `We couldn’t find a flight number on your document. Upload a clearer copy of your ticket.${readHint}`);
     }
   }
 
@@ -162,7 +170,7 @@ export function demoVerifier({ airline, flightNumber, travelDate, today, passeng
       `Your document shows ${facts.dates.map(formatDate).join(', ')}, but your trip is on ${formatDate(travelDate)}. Check the travel date.`,
     );
   } else {
-    add('document_date', false, 'We couldn’t find your travel date on your document. Upload a clearer copy of your ticket.');
+    add('document_date', false, `We couldn’t find your travel date on your document. Upload a clearer copy of your ticket.${readHint}`);
   }
 
   // 6. A flight arriving at the trip's airport (either Mumbai airport for a
@@ -200,7 +208,7 @@ export function demoVerifier({ airline, flightNumber, travelDate, today, passeng
   if (!facts.nameMatched) {
     nameMessage = facts.nameFieldFound
       ? 'The passenger name on your document doesn’t match the name on your FlyPool account. The ticket must be in your full name, as on your account.'
-      : 'We couldn’t find the passenger name on your document. Upload a ticket or boarding pass that clearly shows the passenger’s name.';
+      : `We couldn’t find the passenger name on your document. Upload a ticket or boarding pass that clearly shows the passenger’s name.${readHint}`;
   }
   add('passenger_name', facts.nameMatched, nameMessage);
 

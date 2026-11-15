@@ -22,6 +22,7 @@ import { prepareZXingModule, readBarcodes } from 'zxing-wasm/reader';
 import { extractText, getDocumentProxy } from 'unpdf';
 import { AppError } from '../utils/AppError.js';
 import { env } from '../config/env.js';
+import { findAirlineName, ticketTermsIn } from './ticketAnalysis.js';
 
 const require = createRequire(import.meta.url);
 
@@ -194,10 +195,14 @@ async function readImage(bytes, mimeType, trace = {}) {
     return image.median(3).normalise().png().toBuffer();
   };
   // A quick pass on a small copy first: an image with no readable text (a
-  // photo) stops here instead of spending ~10 s of OCR on its texture.
+  // photo) stops here instead of spending ~10 s of OCR on its texture. A
+  // ticket with coloured bands or a watermark can score low on the small copy
+  // too, so the full pass also runs whenever the quick text already shows a
+  // ticket word or an airline name.
   const quick = await ocr(await prepare(QUICK_OCR_WIDTH), trace, 'ocrQuick');
   trace.quickConfidence = quick.confidence;
-  const { text, confidence } = quick.confidence >= MIN_QUICK_CONFIDENCE ? await ocr(await prepare(OCR_WIDTH), trace, 'ocrFull') : quick;
+  const looksLikeTicket = quick.confidence >= MIN_QUICK_CONFIDENCE || ticketTermsIn(quick.text) > 0 || Boolean(findAirlineName(quick.text));
+  const { text, confidence } = looksLikeTicket ? await ocr(await prepare(OCR_WIDTH), trace, 'ocrFull') : quick;
   return { readable: true, source: barcodes.length ? 'barcode+ocr' : 'ocr', text, barcodes, confidence };
 }
 

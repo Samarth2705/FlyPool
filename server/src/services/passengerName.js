@@ -127,6 +127,20 @@ function nameAtStart(value) {
 
 const hasNameWords = (s) => words(s).some((w) => !TITLES.has(w));
 
+// "PASSENGER SAMARTH VERMA": a label printed ABOVE the name, read by OCR as one
+// line without a separator. Taken only when the rest of the line is just a
+// name - 1 to 4 words of letters, nothing after it - so a sentence such as
+// "Passengers must report at the gate" or "Passenger Asha Verma must report..."
+// is still never read as a name. (The name must still match the account in full.)
+function bareNameAfterLabel(label, rest) {
+  if (!/^(PASSENGER|TRAVELL?ER|GUEST)$/.test(label.trim())) return '';
+  const all = clean(rest).trim().split(/\s+/).filter(Boolean);
+  const name = nameAtStart(rest);
+  const kept = name.split(/\s+/).filter(Boolean);
+  if (kept.length === 0 || kept.length > 4 || kept.length !== all.length) return '';
+  return kept.every((t) => /^[A-Z][A-Z'./,-]*$/.test(t)) ? name : '';
+}
+
 // Every passenger name printed on the document (in memory only - never logged or kept)
 export function findPassengerNames(text = '') {
   const lines = clean(text).replace(/[|]/g, ' ').split('\n');
@@ -140,7 +154,7 @@ export function findPassengerNames(text = '') {
     const [, label, separator, rest] = m;
     // On the same line only after "Passenger:" / "Passenger name ..." - not in
     // a sentence such as "Passengers must report at the gate ..."
-    const sameLine = separator || /NAME/.test(label) ? nameAtStart(rest) : '';
+    const sameLine = separator || /NAME/.test(label) ? nameAtStart(rest) : bareNameAfterLabel(label, rest);
     if (hasNameWords(sameLine)) return add(sameLine);
     // A label alone on its line (or a table header): the name(s) on the next line(s)
     if (words(rest).some((w) => !LABEL_WORDS.has(w))) return; // something else follows the label
