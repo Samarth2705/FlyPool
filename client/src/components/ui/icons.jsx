@@ -265,3 +265,31 @@ export function CheckIcon(props) {
     </Icon>
   );
 }
+
+export function ChatIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M20 12a7.5 7.5 0 0 1-11.1 6.6L4 20l1.4-4.6A7.5 7.5 0 1 1 20 12Z" />
+      <path d="M9 11h6M9 14h3.5" />
+    </Icon>
+  );
+}
+
+export function SendIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M21 3 10 14" />
+      <path d="M21 3l-6.5 18-3.5-7-7-3.5Z" />
+    </Icon>
+  );
+}
+
+export function WalletIcon(props) {
+  return (
+    <Icon {...props}>
+      <path d="M4 7a2 2 0 0 1 2-2h11v4" />
+      <path d="M4 7v11a2 2 0 0 0 2 2h14V9H6a2 2 0 0 1-2-2Z" />
+      <circle cx="16" cy="14.5" r="1.2" fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}

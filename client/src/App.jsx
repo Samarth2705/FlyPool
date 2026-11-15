@@ -20,6 +20,7 @@ const TripDetailsPage = lazy(pages.loadTripDetails);
 const VerifyFlightPage = lazy(pages.loadVerifyFlight);
 const MatchesPage = lazy(pages.loadMatches);
 const BookingSummaryPage = lazy(pages.loadBookingSummary);
+const GroupChatPage = lazy(pages.loadGroupChat);
 const ProfilePage = lazy(pages.loadProfile);
 const MyTripsPage = lazy(pages.loadMyTrips);
 const SettingsPage = lazy(pages.loadSettings);
@@ -51,6 +52,8 @@ export default function App() {
                 <Route path="/trip/:tripId/verify" element={<VerifyFlightPage />} />
                 <Route path="/trip/:tripId/matches" element={<MatchesPage />} />
                 <Route path="/trip/:tripId/summary" element={<BookingSummaryPage />} />
+                {/* Group chat of a booked shared taxi */}
+                <Route path="/trip/:tripId/chat" element={<GroupChatPage />} />
 
                 {/* Account pages (from the profile menu) */}
                 <Route path="/profile" element={<ProfilePage />} />

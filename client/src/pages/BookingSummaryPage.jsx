@@ -30,7 +30,10 @@ import TripSnapshot from '../components/trip/TripSnapshot';
 import LiveActivity from '../components/live/LiveActivity';
 import SeatAvailability from '../components/live/SeatAvailability';
 import TravellerProfile from '../components/matches/TravellerProfile';
-import { CheckCircleIcon, TicketIcon } from '../components/ui/icons';
+import { CheckCircleIcon, TicketIcon, WalletIcon } from '../components/ui/icons';
+import { buttonClasses } from '../components/ui/buttonStyles';
+import PaymentCard from '../components/payment/PaymentCard';
+import ChatButton from '../components/chat/ChatButton';
 import { cancelBooking, confirmBooking, getBooking, getPayment, leaveSharedRide } from '../api/trips.api';
 import { useLiveRide } from '../live/useLiveRide';
 import { formatRupees, formatFlightNumber } from '../utils/format';
@@ -168,27 +171,46 @@ export default function BookingSummaryPage() {
   const cancelled = trip?.status === 'cancelled';
   const lastLeft = !booking ? (view?.pastBookings ?? []).at(-1) : null;
 
-  // Payment status for a booking (current or cancelled), refreshed when its
-  // status changes. Only shown while there is a booking.
+  // Payment for a booking (current or cancelled): loaded when its status
+  // changes, after a payment, and when the shared ride changes (the share is
+  // re-worked out by the server). Only shown while there is a booking.
   const bookingKey = booking ? `${booking.reference}:${booking.status}` : null;
+  const paymentRequest = useRef(0);
+  const loadPayment = useCallback(() => {
+    const request = ++paymentRequest.current; // an older answer never replaces a newer one
+    return getPayment(tripId)
+      .then((result) => request === paymentRequest.current && setPayment(result))
+      .catch(() => request === paymentRequest.current && setPayment(null));
+  }, [tripId]);
   useEffect(() => {
     if (!bookingKey) return undefined;
-    let current = true;
-    getPayment(tripId)
-      .then((result) => current && setPayment(result))
-      .catch(() => current && setPayment(null));
+    loadPayment();
     return () => {
-      current = false;
+      paymentRequest.current += 1;
     };
-  }, [tripId, bookingKey]);
+  }, [bookingKey, loadPayment]);
 
   // Live seats while the trip is active and has a ride
   const liveOn = Boolean(ride) && !cancelled && ['flight_verified', 'ride_selected'].includes(trip?.status);
-  const live = useLiveRide(tripId, { enabled: liveOn, onChange: () => load(true) });
+  const live = useLiveRide(tripId, {
+    enabled: liveOn,
+    onChange: () => {
+      load(true);
+      if (bookingKey) loadPayment();
+    },
+  });
 
   useEffect(() => {
     if (flash) flashRef.current?.focus();
   }, [flash]);
+
+  // Opened from "Pay your share" (My Trips): bring the payment section into view once
+  const scrolledToPayment = useRef(false);
+  useEffect(() => {
+    if (location.hash !== '#payment' || !payment || scrolledToPayment.current) return;
+    scrolledToPayment.current = true;
+    document.getElementById('payment')?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  }, [location.hash, payment]);
 
   async function handleConfirm() {
     if (confirmLock.current || !ride || booked) return;
@@ -267,6 +289,8 @@ export default function BookingSummaryPage() {
   }, []);
 
   const pool = ride?.mode === 'shared' ? ride.pool : null;
+  // The group chat belongs to the shared ride of a CONFIRMED booking
+  const sharedPoolId = booked && booking.mode === 'shared' ? (booking.poolId ?? pool?.id ?? null) : null;
   const waitingForOthers = !booked && pool && pool.status === 'open' && pool.others.length === 0;
   const canConfirm = Boolean(ride) && !booked && !cancelled && trip?.status === 'ride_selected' && !waitingForOthers && pool?.status !== 'cancelled';
   const actions = view?.actions;
@@ -305,6 +329,17 @@ export default function BookingSummaryPage() {
                     Reference <span className="font-mono font-semibold tracking-wide">{booking.reference}</span>. FlyPool has saved your
                     booking. This pilot doesn’t assign drivers yet.
                   </p>
+                  {(sharedPoolId || payment?.canPay) && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {sharedPoolId && <ChatButton tripId={tripId} poolId={sharedPoolId} size="sm" />}
+                      {payment?.canPay && (
+                        <a href="#payment" className={buttonClasses({ variant: 'primary', size: 'sm', fullWidth: false })}>
+                          <WalletIcon className="h-4 w-4" />
+                          {payment.payment?.status === 'pending' ? 'Continue payment' : 'Pay your share'}
+                        </a>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -438,6 +473,16 @@ export default function BookingSummaryPage() {
                   Nothing is booked until you press Confirm booking. No payment is taken here.
                 </p>
               </Card>
+            )}
+
+            {booking && (
+              <PaymentCard
+                tripId={tripId}
+                view={payment}
+                trip={trip}
+                booking={booking}
+                onChanged={loadPayment}
+              />
             )}
 
             {booking && (

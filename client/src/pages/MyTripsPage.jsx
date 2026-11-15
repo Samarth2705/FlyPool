@@ -14,7 +14,10 @@ import LoadingState from '../components/ui/LoadingState';
 import ErrorState from '../components/ui/ErrorState';
 import FlightCode from '../components/ui/FlightCode';
 import ConfirmDialog from '../components/ui/ConfirmDialog';
-import { ArrowRightIcon, PlusIcon, TicketIcon } from '../components/ui/icons';
+import { ArrowRightIcon, PlusIcon, TicketIcon, WalletIcon } from '../components/ui/icons';
+import ChatButton from '../components/chat/ChatButton';
+import { statusOf } from '../components/payment/paymentStatus';
+import { getPayment, listMyPayments } from '../api/payments.api';
 import { cancelBooking, cancelTrip, listMyTrips } from '../api/trips.api';
 import { formatDate, formatTime } from '../utils/dates';
 import { formatFlightNumber, formatRupees } from '../utils/format';
@@ -30,12 +33,12 @@ function fareText(ride) {
   return fare ? `${formatRupees(fare.perPerson.max)} est. / person` : null;
 }
 
-function Fact({ label, children, muted }) {
+function Fact({ label, children, muted, wrap }) {
   return (
     <div className="min-w-0">
       <dt className="text-xs text-slate-500 dark:text-slate-400">{label}</dt>
       <dd
-        className={`tabular mt-0.5 truncate text-sm ${muted ? 'text-slate-500 dark:text-slate-400' : 'font-medium text-slate-900 dark:text-slate-100'}`}
+        className={`tabular mt-0.5 text-sm ${wrap ? 'break-words' : 'truncate'} ${muted ? 'text-slate-500 dark:text-slate-400' : 'font-medium text-slate-900 dark:text-slate-100'}`}
       >
         {children}
       </dd>
@@ -43,10 +46,39 @@ function Fact({ label, children, muted }) {
   );
 }
 
-function TripCard({ trip, onCancel }) {
+// The recorded payment for the trip's booking: an open or paid one first,
+// else the latest attempt (payments come newest first)
+function paymentFor(trip, payments) {
+  const reference = trip.booking?.reference;
+  if (!reference || !payments) return null;
+  const mine = payments.filter((p) => p.tripId === trip.id && p.bookingReference === reference);
+  return mine.find((p) => ['pending', 'processing', 'paid'].includes(p.status)) ?? mine[0] ?? null;
+}
+
+// The payment line and button of a card: { text, muted?, action? }.
+// A CONFIRMED booking uses the server's payment view (GET /trips/:id/payment),
+// which says whether it can be paid right now - payments may be switched off,
+// or a shared taxi may still be waiting for others to book. Pay is offered
+// ONLY when the server says canPay. An ended booking shows what was recorded.
+function paymentLine(view, recorded) {
+  if (view) {
+    const p = view.payment;
+    if (p?.status === 'paid') return { text: `${statusOf(p).label} · ${formatRupees(p.amount)}` };
+    if (view.mode === 'off') return { text: 'Payments not available yet', muted: true };
+    if (view.blocker?.code === 'WAITING_FOR_BOOKINGS') return { text: 'Waiting for others to book', muted: true };
+    if (view.blocker) return { text: 'Can’t be paid in FlyPool yet', muted: true };
+    const open = ['pending', 'processing'].includes(p?.status);
+    return { text: statusOf(p).label, action: view.canPay ? (open ? 'Continue payment' : 'Pay your share') : null };
+  }
+  if (recorded) return { text: `${statusOf(recorded).label}${recorded.status === 'paid' ? ` · ${formatRupees(recorded.amount)}` : ''}` };
+  return null;
+}
+
+function TripCard({ trip, payments, onCancel }) {
   const [confirming, setConfirming] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState('');
+  const [payView, setPayView] = useState(null); // the server's payment view of a confirmed booking
 
   const state = tripState(trip);
   const closeDialog = useCallback(() => {
@@ -69,6 +101,24 @@ function TripCard({ trip, onCancel }) {
   const fare = fareText(trip.ride);
   const headingId = `trip-${trip.id}`;
   const bookingRef = trip.booking?.reference;
+  const booked = trip.booking?.status === 'confirmed' && trip.status !== 'cancelled';
+  const chatPoolId = booked && trip.booking.mode === 'shared' ? (trip.booking.poolId ?? trip.poolId ?? null) : null;
+
+  // Ask the server whether this booking can be paid now. If it can't answer,
+  // no payment line and no button - never a guess.
+  useEffect(() => {
+    if (!booked) return undefined;
+    let current = true;
+    getPayment(trip.id).then(
+      (view) => current && setPayView(view),
+      () => current && setPayView(null),
+    );
+    return () => {
+      current = false;
+    };
+  }, [trip.id, booked, bookingRef]);
+
+  const pay = paymentLine(booked ? payView : null, booked ? null : paymentFor(trip, payments));
 
   return (
     <li
@@ -112,9 +162,14 @@ function TripCard({ trip, onCancel }) {
             <span className="font-mono">{bookingRef}</span>
           </Fact>
         )}
+        {pay && (
+          <Fact label="Payment" muted={pay.muted} wrap>
+            <span data-testid="trip-payment">{pay.text}</span>
+          </Fact>
+        )}
       </dl>
 
-      {(next || state.cancel) && (
+      {(next || state.cancel || chatPoolId || pay?.action) && (
         <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 px-4 py-3 sm:px-5 dark:border-slate-800">
           {next && (
             <LinkButton to={`/trip/${trip.id}/${next.path}`} size="sm" variant={state.inProgress ? 'primary' : 'secondary'}>
@@ -122,6 +177,13 @@ function TripCard({ trip, onCancel }) {
               <ArrowRightIcon className="h-4 w-4" />
             </LinkButton>
           )}
+          {pay?.action && (
+            <LinkButton to={`/trip/${trip.id}/summary#payment`} size="sm">
+              <WalletIcon className="h-4 w-4" />
+              {pay.action}
+            </LinkButton>
+          )}
+          {chatPoolId && <ChatButton tripId={trip.id} poolId={chatPoolId} size="sm" pollMs={0} />}
           {state.cancel && (
             <Button
               variant="ghost"
@@ -158,7 +220,7 @@ function TripCard({ trip, onCancel }) {
   );
 }
 
-function TripSection({ title, description, trips, onCancel }) {
+function TripSection({ title, description, trips, payments, onCancel }) {
   if (trips.length === 0) return null;
   const id = `section-${title.toLowerCase().replace(/\s+/g, '-')}`;
   return (
@@ -172,7 +234,7 @@ function TripSection({ title, description, trips, onCancel }) {
       {description && <p className="text-sm text-slate-600 dark:text-slate-400">{description}</p>}
       <ul className="mt-3 space-y-3">
         {trips.map((trip) => (
-          <TripCard key={trip.id} trip={trip} onCancel={onCancel} />
+          <TripCard key={trip.id} trip={trip} payments={payments} onCancel={onCancel} />
         ))}
       </ul>
     </section>
@@ -195,18 +257,19 @@ function groupTrips(trips, now = Date.now()) {
 
 export default function MyTripsPage() {
   const [trips, setTrips] = useState(null);
+  const [payments, setPayments] = useState(null); // null: not loaded (the payment line is left out)
   const [error, setError] = useState(null);
 
-  const load = useCallback(
-    () =>
-      listMyTrips()
-        .then((list) => {
-          setError(null);
-          setTrips(groupTrips(list));
-        })
-        .catch(setError),
-    [],
-  );
+  const load = useCallback(() => {
+    // Payment statuses are extra: if they can't be loaded, the trips still show
+    listMyPayments().then(setPayments, () => setPayments(null));
+    return listMyTrips()
+      .then((list) => {
+        setError(null);
+        setTrips(groupTrips(list));
+      })
+      .catch(setError);
+  }, []);
 
   useEffect(() => {
     load();
@@ -272,11 +335,12 @@ export default function MyTripsPage() {
               title="In progress"
               description="These trips still need a step from you."
               trips={trips.inProgress}
+              payments={payments}
               onCancel={handleCancel}
             />
-            <TripSection title="Upcoming" trips={trips.upcoming} onCancel={handleCancel} />
-            <TripSection title="Past" trips={trips.past} onCancel={handleCancel} />
-            <TripSection title="Cancelled" trips={trips.cancelled} onCancel={handleCancel} />
+            <TripSection title="Upcoming" trips={trips.upcoming} payments={payments} onCancel={handleCancel} />
+            <TripSection title="Past" trips={trips.past} payments={payments} onCancel={handleCancel} />
+            <TripSection title="Cancelled" trips={trips.cancelled} payments={payments} onCancel={handleCancel} />
           </>
         )}
       </div>

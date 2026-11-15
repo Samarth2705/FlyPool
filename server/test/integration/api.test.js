@@ -1250,6 +1250,94 @@ test('fare splitting: opens when everyone has booked, each pays their own share,
   assert.equal((await R.api('GET', '/payments')).data.payments[0].status, 'paid');
 });
 
+// ---- 12g. chat + payments across taxis and over a ride's life ------------------------
+test('two taxis never share a chat; a late joiner gets the right chat; a fare change never corrupts payments', async () => {
+  const date = '2027-01-13';
+  const at = (time) => ({ travelDate: date, destination: 'Juhu', expectedArrivalTime: time });
+  const [P, Q, X, Y, R] = [await passenger(at('10:00')), await passenger(at('10:05')), await passenger(at('10:10')), await passenger(at('10:15')), await passenger(at('10:20'))];
+  // Taxi A (SUV): P + Q. Taxi B (sedan): X + Y - a separate shared ride, same airport and time
+  const taxiA = (await choose(P, { mode: 'shared', vehicleType: 'suv' })).data.trip.poolId;
+  await choose(Q, { mode: 'shared', vehicleType: 'suv', poolId: taxiA });
+  const taxiB = (await choose(X, { mode: 'shared', vehicleType: 'sedan' })).data.trip.poolId;
+  await choose(Y, { mode: 'shared', vehicleType: 'sedan', poolId: taxiB });
+  assert.notEqual(taxiA, taxiB);
+  for (const p of [P, Q, X, Y]) assert.equal((await p.api('POST', `/trips/${p.id}/booking`, {})).status, 201);
+  const read = (p, pool) => p.api('GET', `/pools/${pool}/messages`);
+  const say = (p, pool, text) => p.api('POST', `/pools/${pool}/messages`, { text, clientMessageId: crypto.randomUUID() });
+
+  // Each taxi talks only to itself - changing the id in the request doesn't help
+  assert.equal((await say(P, taxiA, 'Taxi A here')).status, 201);
+  assert.equal((await say(X, taxiB, 'Taxi B here')).status, 201);
+  for (const [who, other] of [[P, taxiB], [Q, taxiB], [X, taxiA], [Y, taxiA]]) {
+    assert.equal((await read(who, other)).error.code, 'CHAT_NOT_FOUND');
+    assert.equal((await say(who, other, 'let me in')).error.code, 'CHAT_NOT_FOUND');
+  }
+  assert.deepEqual((await read(Q, taxiA)).data.messages.map((m) => m.text), ['Taxi A here']);
+  assert.deepEqual((await read(Y, taxiB)).data.messages.map((m) => m.text), ['Taxi B here']);
+  assert.equal(await ChatMessage.countDocuments({ poolId: taxiA, text: 'let me in' }), 0);
+
+  // Payments: P pays; Q starts paying
+  const pPay = (await startPay(P)).data.payment;
+  assert.equal((await demoResult(P, pPay.id, 'success')).data.payment.status, 'paid');
+  const qView = (await payView(Q)).data;
+  assert.equal(qView.payment, null); // P paying didn't touch Q
+  const qPending = (await startPay(Q)).data.payment;
+  assert.equal(qPending.amount, qView.amount);
+
+  // R joins taxi A later: not booked yet -> no chat; the fare is being re-worked out
+  await choose(R, { mode: 'shared', vehicleType: 'suv', poolId: taxiA });
+  assert.equal((await read(R, taxiA)).error.code, 'CHAT_NOT_FOUND');
+  // Q's old amount is no longer right: completing it is refused, nothing paid, the record is closed
+  assert.equal((await demoResult(Q, qPending.id, 'success')).error.code, 'AMOUNT_CHANGED');
+  const qClosed = await Payment.findById(qPending.id);
+  assert.equal(qClosed.status, 'cancelled');
+  assert.equal(qClosed.paidAt, undefined);
+  // P's paid payment is untouched
+  const pSaved = await Payment.findById(pPay.id);
+  assert.equal(pSaved.status, 'paid');
+  assert.equal(pSaved.amount, pPay.amount);
+
+  // R books: joins the chat with its history; payment opens with the new 3-way split
+  await R.api('POST', `/trips/${R.id}/booking`, {});
+  const rChat = (await read(R, taxiA)).data;
+  assert.deepEqual(rChat.messages.map((m) => m.text), ['Taxi A here']);
+  assert.equal(rChat.conversation.members.length, 3);
+  assert.equal((await say(R, taxiA, 'Joined!')).status, 201);
+  assert.ok((await read(P, taxiA)).data.messages.some((m) => m.text === 'Joined!'));
+  const qNow = (await payView(Q)).data;
+  assert.equal(qNow.fare.people, 3);
+  assert.ok(qNow.amount < qView.amount, 'a third passenger makes the share smaller');
+  const qPay = (await startPay(Q)).data.payment;
+  assert.notEqual(qPay.id, qPending.id);
+  assert.equal(qPay.amount, qNow.amount); // the server's amount, not the old one
+  assert.equal((await demoResult(Q, qPay.id, 'success')).data.payment.status, 'paid');
+  const rView = (await payView(R)).data;
+  assert.equal(rView.payment, null); // Q paying didn't mark R as paid
+  assert.deepEqual(rView.pool.members.map((m) => m.paid), [true, true, false]);
+
+  // R cancels: loses the chat; everyone's payment records stay as they were
+  await R.api('POST', `/trips/${R.id}/booking/cancel`, {});
+  assert.equal((await read(R, taxiA)).error.code, 'CHAT_NOT_FOUND');
+  assert.equal((await read(Q, taxiA)).data.conversation.members.length, 2);
+  assert.deepEqual(
+    (await Payment.find({ tripId: { $in: [P.id, Q.id] } }).sort({ createdAt: 1 })).map((p) => [String(p.tripId), p.status, p.amount]),
+    [
+      [P.id, 'paid', pPay.amount],
+      [Q.id, 'cancelled', qPending.amount],
+      [Q.id, 'paid', qPay.amount],
+    ],
+  );
+  assert.equal(await Payment.countDocuments({ tripId: R.id }), 0);
+
+  // Demo only: no card / UPI / bank details can be sent or stored
+  const extra = await demoResult(Q, qPay.id, 'success');
+  assert.equal(extra.data.changed, false); // already paid: same answer, nothing new
+  const withCard = await Q.api('POST', `/payments/${qPay.id}/demo-result`, { outcome: 'success', cardNumber: '4111111111111111', upiPin: '1234' });
+  assert.equal(withCard.error.code, 'VALIDATION_ERROR');
+  assert.deepEqual(Object.keys(Payment.schema.paths).filter((path) => /card|cvv|upi|pin|bank|account|iban/i.test(path)), []);
+  assert.deepEqual(new Set((await Payment.find({ tripId: Q.id })).map((p) => p.mode)), new Set(['demo']));
+});
+
 // ---- 13. privacy / access control -------------------------------------------------
 test("users can't read or change another user's trips, rides or pools", async () => {
   const owner = await passenger({ travelDate: '2026-12-27' });

@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import BookingSummaryPage from './BookingSummaryPage';
 import * as api from '../api/trips.api';
+import * as chat from '../api/chat.api';
 import { makeBooking, makeLive, makeMember, makePool, makeRide, makeTrip, makeView } from '../test/fixtures';
 
 vi.mock('../api/trips.api', () => ({
@@ -17,6 +18,9 @@ vi.mock('../api/trips.api', () => ({
   getLiveRide: vi.fn(),
   leaveLiveRide: vi.fn(() => Promise.resolve()),
 }));
+vi.mock('../api/payments.api', () => ({ getPayment: vi.fn(), startPayment: vi.fn(), completeDemoPayment: vi.fn() }));
+vi.mock('../api/chat.api', () => ({ getMessages: vi.fn(), sendMessage: vi.fn() }));
+vi.mock('../hooks/useAuth', () => ({ useAuth: () => ({ user: { id: 'user1', name: 'Juliet Demo' } }) }));
 vi.mock('../components/layout/AppLayout', () => ({ default: ({ children }) => <main>{children}</main> }));
 
 const NO_PAYMENT = { mode: 'demo', demo: true, payment: null, amount: 300, canPay: true };
@@ -41,6 +45,7 @@ beforeEach(() => {
   api.getPayment.mockResolvedValue(NO_PAYMENT);
   api.leaveLiveRide.mockResolvedValue();
   api.getLiveRide.mockImplementation(() => new Promise(() => {})); // live tested separately; never answers here
+  chat.getMessages.mockResolvedValue({ conversation: null, messages: [], hasOlder: false, serverTime: '2026-11-14T10:00:00.000Z' });
 });
 
 describe('booking confirmation', () => {
@@ -246,6 +251,7 @@ describe('cancelling and leaving', () => {
     api.leaveSharedRide.mockResolvedValue(left);
     renderSummary();
     await userEvent.click(await screen.findByRole('button', { name: 'Leave shared ride' }));
+    expect(screen.getByRole('link', { name: 'Group chat' })).toBeInTheDocument();
     const dialog = screen.getByRole('alertdialog', { name: 'Leave this shared ride?' });
     await userEvent.click(within(dialog).getByRole('button', { name: 'Yes, leave shared ride' }));
 
@@ -254,6 +260,7 @@ describe('cancelling and leaving', () => {
     expect(await screen.findByText('You left the shared ride')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Choose a new ride' })).toHaveAttribute('href', '/trip/trip1/matches');
     expect(screen.queryByText(/cancelled/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Group chat/ })).not.toBeInTheDocument(); // no chat access any more
   });
 
   test('a refused action shows the server’s reason and reloads what the server has', async () => {
@@ -283,4 +290,68 @@ test('a cancelled trip has no live polling and no booking actions', async () => 
   expect(await screen.findByText('This trip was cancelled')).toBeInTheDocument();
   expect(api.getLiveRide).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: 'Confirm booking' })).not.toBeInTheDocument();
+});
+
+describe('group chat and payment on the booking', () => {
+  const PAYABLE = {
+    mode: 'demo',
+    demo: true,
+    amount: 300,
+    fare: { total: 600, people: 2, partySize: 1, share: 300, perPerson: { min: 300, max: 300 } },
+    blocker: null,
+    payment: null,
+    canPay: true,
+    pool: null,
+    history: [],
+  };
+
+  test('a booked shared ride: Group chat entry, and a Payment section with this passenger’s share and Pay now', async () => {
+    api.getBooking.mockResolvedValue(sharedView({ booked: true }));
+    api.getPayment.mockResolvedValue(PAYABLE);
+    renderSummary();
+    expect(await screen.findByRole('link', { name: 'Group chat' })).toHaveAttribute('href', '/trip/trip1/chat');
+    expect(chat.getMessages).toHaveBeenCalledWith('pool1', expect.anything()); // the booking's own shared ride (unread check)
+    expect(await screen.findByRole('link', { name: /Pay your share/ })).toHaveAttribute('href', '#payment');
+    const payment = within(screen.getByTestId('payment-card'));
+    expect(payment.getByText('Total taxi fare').nextSibling).toHaveTextContent('₹600');
+    expect(payment.getByTestId('payment-share')).toHaveTextContent('₹300');
+    expect(payment.getByRole('button', { name: 'Pay now · ₹300' })).toBeEnabled();
+  });
+
+  test('new messages from other passengers show on the Group chat button', async () => {
+    api.getBooking.mockResolvedValue(sharedView({ booked: true }));
+    chat.getMessages.mockResolvedValue({
+      conversation: null,
+      messages: [{ id: 'm1', text: 'Hi!', createdAt: '2026-11-14T10:00:00.000Z', sender: { name: 'Samarth V.', isYou: false } }],
+      hasOlder: false,
+      serverTime: '2026-11-14T10:00:05.000Z',
+    });
+    renderSummary();
+    expect(await screen.findByRole('link', { name: 'Group chat, 1 new' })).toBeInTheDocument();
+  });
+
+  test('a solo booking can be paid but has no group chat; a paid share shows Paid (Demo)', async () => {
+    api.getBooking.mockResolvedValue(makeView({ ride: makeRide({ mode: 'solo' }), booked: true }));
+    api.getPayment.mockResolvedValue({
+      ...PAYABLE,
+      fare: { ...PAYABLE.fare, people: 1, share: 600, total: 600 },
+      amount: 600,
+      canPay: false,
+      payment: { id: 'pay1', status: 'paid', amount: 600, mode: 'demo', bookingReference: 'FP-TESTAB23', paidAt: '2026-11-14T10:30:00.000Z' },
+    });
+    renderSummary();
+    expect(await within(await screen.findByTestId('payment-card')).findByText('Paid (Demo)')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Group chat/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Pay your share/ })).not.toBeInTheDocument();
+    expect(chat.getMessages).not.toHaveBeenCalled();
+  });
+
+  test('a ride chosen but not booked: no chat, no payment yet', async () => {
+    api.getBooking.mockResolvedValue(sharedView());
+    renderSummary();
+    await screen.findByRole('button', { name: 'Confirm booking' });
+    expect(screen.queryByTestId('payment-card')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Group chat/ })).not.toBeInTheDocument();
+    expect(api.getPayment).not.toHaveBeenCalled();
+  });
 });

@@ -5,6 +5,7 @@ export const loadTripDetails = () => import('./TripDetailsPage');
 export const loadVerifyFlight = () => import('./VerifyFlightPage');
 export const loadMatches = () => import('./MatchesPage');
 export const loadBookingSummary = () => import('./BookingSummaryPage');
+export const loadGroupChat = () => import('./GroupChatPage');
 export const loadMyTrips = () => import('./MyTripsPage');
 export const loadProfile = () => import('./ProfilePage');
 export const loadSettings = () => import('./SettingsPage');

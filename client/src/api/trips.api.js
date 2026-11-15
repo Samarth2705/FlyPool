@@ -119,9 +119,6 @@ export async function leaveSharedRide(tripId) {
   return res.data.data;
 }
 
-// Payment status for the booking (read-only here):
+// Payment status for the booking (paying lives in payments.api.js):
 // { mode, demo, payment: null | { status, amount, ... }, amount, canPay, ... }
-export async function getPayment(tripId) {
-  const res = await api.get(`/trips/${tripId}/payment`);
-  return res.data.data;
-}
+export { getPayment } from './payments.api';
